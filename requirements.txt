@@ -1,0 +1,21 @@
+# requirements.txt
+
+# --- Core API Libraries ---
+google-generativeai  # For Gemini API access
+anthropic            # For Claude API access
+openai               # For OpenAI (GPT) API access
+
+# --- Environment Variable Management ---
+python-dotenv        # For loading API keys and settings from .env file
+
+# --- Nuitka Recommended/Helper Libraries ---
+# These are often beneficial or required for Nuitka compilation
+ordered-set          # Used internally by Nuitka
+zstandard            # Used by Nuitka for compression/performance
+
+# --- Image Handling (for Tkinter icon/potential future use) ---
+Pillow               # Useful for image handling in Tkinter, especially cross-platform or non-standard formats
+
+# --- Other Notes ---
+# - tkinter: Is part of the Python standard library and should NOT be listed here.
+# - os, sys, json, re, traceback, threading, time, copy, shutil, platform: Are standard library modules.
