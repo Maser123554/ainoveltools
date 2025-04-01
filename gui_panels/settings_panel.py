@@ -20,12 +20,12 @@ class SettingsPanel(ttk.Frame):
         self.scene_plot_widget_visible = False
         self.settings_area_visible = True
 
+        # 이 플래그는 장면 플롯, 온도, 길이 등 장면 설정 스냅샷에 영향을 주는 변경사항을 추적합니다.
         self.chapter_settings_modified_flag = False
-        self._chapter_settings_after_id = None
+        self._chapter_settings_after_id = None # This seems unused after the refactor, might remove later.
 
         self._create_widgets()
         # 초기 UI 상태 설정은 AppCore에서 set_gui_manager 호출 후 진행
-        # self.update_ui_state(False, False, False, False)
 
     def _create_widgets(self):
         """설정 패널의 위젯들 생성"""
@@ -79,17 +79,15 @@ class SettingsPanel(ttk.Frame):
         self.novel_settings_wrapper.columnconfigure(0, weight=1)
         self.novel_settings_wrapper.rowconfigure(1, weight=1)
         outer_row += 1
-        # --- 소설 레이블 수정 및 저장 (변경 적용) ---
         novel_label_text = f"  (소설 설정: 세계관, 주요 인물, 줄거리 등)" # 초기/기본 텍스트
         novel_label = ttk.Label(self.novel_settings_wrapper, text=novel_label_text)
         novel_label.grid(row=0, column=0, sticky='nw', padx=(constants.PAD_X // 2, 0))
         self.widgets['novel_settings_label'] = novel_label # 나중에 업데이트하기 위해 저장
-        # --- 수정 끝 ---
         novel_text_widget, novel_scroll = self._create_text_area(self.novel_settings_wrapper, height=8)
         novel_text_widget.grid(row=1, column=0, sticky="nsew", padx=constants.PAD_X//2, pady=(0, constants.PAD_Y // 2))
         novel_scroll.grid(row=1, column=1, sticky="ns", pady=(0, constants.PAD_Y // 2))
         self.widgets['novel_settings_text'] = novel_text_widget
-        novel_text_widget.bind("<<Modified>>", self._on_novel_settings_modified)
+        novel_text_widget.bind("<<Modified>>", self._on_novel_settings_modified) # 소설 설정 수정 핸들러
         self.novel_settings_wrapper.grid_remove()
         novel_text_widget.config(state=tk.DISABLED)
 
@@ -97,9 +95,7 @@ class SettingsPanel(ttk.Frame):
         arc_group_frame = ttk.Frame(self.settings_frame_outer)
         arc_group_frame.grid(row=outer_row, column=0, sticky="new", pady=(constants.PAD_Y, constants.PAD_Y//2))
         outer_row += 1
-        # --- 챕터 그룹 제목 수정 (변경 적용) ---
         ttk.Label(arc_group_frame, text="[챕터 전체 설정]", style='Bold.TLabel').pack(side=tk.LEFT, anchor='w')
-        # --- 수정 끝 ---
         arc_toggle_btn = ttk.Button(arc_group_frame, text="⚙️ 보기/숨기기",
                                       command=self._toggle_chapter_arc_notes_visibility, style='Toolbutton', takefocus=0)
         arc_toggle_btn.pack(side=tk.LEFT, padx=(constants.PAD_X, 0))
@@ -110,16 +106,15 @@ class SettingsPanel(ttk.Frame):
         self.chapter_arc_notes_wrapper.columnconfigure(0, weight=1)
         self.chapter_arc_notes_wrapper.rowconfigure(1, weight=1)
         outer_row += 1
-        # --- 챕터 설정 레이블 수정 및 저장 (변경 적용) ---
         arc_label_text = f"  (챕터 설정: 챕터의 전반적인 플롯)" # 초기/기본 텍스트
         arc_label = ttk.Label(self.chapter_arc_notes_wrapper, text=arc_label_text)
         arc_label.grid(row=0, column=0, sticky='nw', padx=(constants.PAD_X // 2, 0))
         self.widgets['chapter_arc_notes_label'] = arc_label # 나중에 업데이트 위해 저장
-        # --- 수정 끝 ---
         arc_text_widget, arc_scroll = self._create_text_area(self.chapter_arc_notes_wrapper, height=4, state=tk.NORMAL)
         arc_text_widget.grid(row=1, column=0, sticky="nsew", padx=constants.PAD_X//2, pady=(0, constants.PAD_Y // 2))
         arc_scroll.grid(row=1, column=1, sticky="ns", pady=(0, constants.PAD_Y // 2))
-        arc_text_widget.bind("<<Modified>>", self._on_chapter_settings_modified)
+        # *** 수정: 아크 노트 전용 핸들러 바인딩 ***
+        arc_text_widget.bind("<<Modified>>", self._on_arc_notes_modified)
         self.widgets['chapter_arc_notes_text'] = arc_text_widget
         self.chapter_arc_notes_wrapper.grid_remove()
         arc_text_widget.config(state=tk.DISABLED)
@@ -128,9 +123,7 @@ class SettingsPanel(ttk.Frame):
         plot_group_frame = ttk.Frame(self.settings_frame_outer)
         plot_group_frame.grid(row=outer_row, column=0, sticky="new", pady=(constants.PAD_Y, constants.PAD_Y//2))
         outer_row += 1
-        # --- 장면 그룹 제목 유지 ---
         ttk.Label(plot_group_frame, text="[장면 플롯]", style='Bold.TLabel').pack(side=tk.LEFT, anchor='w')
-        # --- 유지 끝 ---
         plot_toggle_btn = ttk.Button(plot_group_frame, text="⚙️ 보기/숨기기",
                                       command=self._toggle_scene_plot_visibility, style='Toolbutton', takefocus=0)
         plot_toggle_btn.pack(side=tk.LEFT, padx=(constants.PAD_X, 0))
@@ -141,12 +134,11 @@ class SettingsPanel(ttk.Frame):
         self.scene_plot_wrapper.columnconfigure(0, weight=1)
         self.scene_plot_wrapper.rowconfigure(1, weight=1)
         outer_row += 1
-        # --- 장면 설정 레이블 수정 (변경 적용) ---
         ttk.Label(self.scene_plot_wrapper, text="  이번화의 상세 전개", style='Bold.TLabel').grid(row=0, column=0, sticky='nw', padx=(constants.PAD_X // 2, 0))
-        # --- 수정 끝 ---
         plot_text_widget, plot_scroll = self._create_text_area(self.scene_plot_wrapper, height=5, state=tk.NORMAL)
         plot_text_widget.grid(row=1, column=0, sticky="nsew", padx=constants.PAD_X//2, pady=(0, constants.PAD_Y // 2))
         plot_scroll.grid(row=1, column=1, sticky="ns", pady=(0, constants.PAD_Y // 2))
+        # *** 수정: 장면 플롯은 _on_chapter_settings_modified 핸들러 사용 (유지) ***
         plot_text_widget.bind("<<Modified>>", self._on_chapter_settings_modified)
         self.widgets['scene_plot_text'] = plot_text_widget
         self.scene_plot_wrapper.grid_remove()
@@ -167,7 +159,7 @@ class SettingsPanel(ttk.Frame):
         temp_label.pack(side=tk.LEFT, padx=(constants.PAD_X // 2, 0))
         temp_scale.bind("<Button-1>", self._handle_scale_click)
         temp_scale.bind("<B1-Motion>", self._on_scale_drag)
-        temp_scale.bind("<ButtonRelease-1>", self._on_scale_release)
+        temp_scale.bind("<ButtonRelease-1>", self._on_scale_release) # 스케일 변경 완료 핸들러
         self.widgets['temperature_scale'] = temp_scale
         self.widgets['temperature_label'] = temp_label
         self._update_temperature_label()
@@ -176,7 +168,7 @@ class SettingsPanel(ttk.Frame):
         length_combo = ttk.Combobox(options_frame, values=constants.LENGTH_OPTIONS, width=45, state="readonly", font=self.text_font)
         length_combo.grid(row=1, column=1, padx=constants.PAD_X//2, pady=constants.PAD_Y//2, sticky="ew")
         length_combo.current(0) # 기본값 선택
-        length_combo.bind("<<ComboboxSelected>>", self._on_chapter_settings_modified)
+        length_combo.bind("<<ComboboxSelected>>", self._on_chapter_settings_modified) # 길이 변경 핸들러
         self.widgets['length_combobox'] = length_combo
 
         # === 2-6. 액션 버튼 ===
@@ -210,12 +202,7 @@ class SettingsPanel(ttk.Frame):
                               relief=tk.SOLID, borderwidth=1, undo=True, state=state)
         scroll = ttk.Scrollbar(parent, orient=tk.VERTICAL, command=text_widget.yview)
         text_widget['yscrollcommand'] = scroll.set
-        # Grid layout within this helper adjusted - parent should handle its grid
-        # text_widget.grid(row=0, column=0, sticky='nsew') # Let caller handle grid
-        # scroll.grid(row=0, column=1, sticky='ns')     # Let caller handle grid
-        # parent.rowconfigure(0, weight=1)                # Let caller handle configure
-        # parent.columnconfigure(0, weight=1)           # Let caller handle configure
-        return text_widget, scroll # Return widgets for external reference if needed
+        return text_widget, scroll
 
 
     # --- 위젯 이벤트 핸들러 ---
@@ -245,7 +232,6 @@ class SettingsPanel(ttk.Frame):
             models = self.app_core.get_models_by_api_type(api_type)
         else: # 비상시
             print("GUI WARN: AppCore에 get_models_by_api_type 없음.")
-            # Use the structure expected by the rest of the logic if AppCore has it
             models = self.app_core.available_models_by_type.get(api_type, [])
 
         print(f"GUI: '{api_type}'에 대한 모델 목록 업데이트: {models}")
@@ -257,14 +243,12 @@ class SettingsPanel(ttk.Frame):
             model_combo.set(current_session_model)
         elif models:
             model_combo.set(models[0]) # 첫 번째 항목 선택
-            # AppCore에도 모델 변경 알림 (콤보박스 자동 변경 시)
             print(f"GUI: 모델 자동 변경됨 -> {models[0]}. AppCore 알림.")
             if models[0] != self.app_core.selected_model: # Only notify if actually changed
                  self.app_core.handle_model_change(models[0])
         else:
             model_combo.set("모델 없음")
             model_combo.config(state=tk.DISABLED)
-            # AppCore 모델도 None으로 설정?
             print(f"GUI WARN: '{api_type}'에 사용 가능한 모델 없음. AppCore 모델 비우기.")
             if self.app_core.selected_model is not None: # Only notify if actually changed
                 self.app_core.handle_model_change(None)
@@ -280,7 +264,7 @@ class SettingsPanel(ttk.Frame):
              # AppCore 핸들러 호출 전에 비교하여 변경 시에만 플래그 설정
              if selected != self.app_core.selected_model:
                  print(f"GUI: 모델 변경 선택됨 -> {selected}")
-                 self._trigger_chapter_settings_modified()
+                 self._trigger_chapter_settings_modified() # 모델 변경도 장면 설정 변경으로 간주
                  self.app_core.handle_model_change(selected)
              else:
                  print(f"GUI DEBUG: 모델 선택됨 (변경 없음): {selected}")
@@ -298,29 +282,47 @@ class SettingsPanel(ttk.Frame):
                 self.app_core.handle_novel_settings_modified()
             widget.edit_modified(False) # Reset Tk flag immediately
 
+    # *** 추가된 메소드: 아크 노트 전용 핸들러 ***
+    def _on_arc_notes_modified(self, event=None):
+        """챕터 아크 노트 텍스트 수정 시 AppCore에 알림"""
+        widget = self.widgets.get('chapter_arc_notes_text')
+        # Ensure widget exists, is modified by user, and not currently disabled
+        if widget and widget.winfo_exists() and widget.edit_modified() and widget.cget('state') == tk.NORMAL:
+            # Check AppCore's busy state using is_busy()
+            if hasattr(self.app_core, 'is_busy') and not self.app_core.is_busy():
+                # Call the correct AppCore handler for arc notes modification
+                self.app_core.handle_arc_settings_modified()
+            widget.edit_modified(False) # Reset Tk flag immediately
 
+    # *** 수정된 메소드: 장면 플롯, 길이, 온도 관련 핸들러 ***
     def _on_chapter_settings_modified(self, event=None):
-        """챕터 아크 노트, 장면 플롯, 길이, 온도 등 변경 시 플래그 설정"""
+        """챕터/장면 관련 설정(장면플롯, 옵션) 변경 시 플래그 설정"""
         modified = False
-        # Check Text widgets (Arc Notes, Scene Plot)
-        for key in ['chapter_arc_notes_text', 'scene_plot_text']:
-            widget = self.widgets.get(key)
-            if widget and widget.winfo_exists() and widget.edit_modified() and widget.cget('state') == tk.NORMAL:
-                widget.edit_modified(False) # Reset internal flag
-                modified = True
-                print(f"GUI DEBUG: '{key}' 수정됨.")
+
+        # Check Text widgets (Scene Plot ONLY)
+        plot_widget = self.widgets.get('scene_plot_text')
+        if plot_widget and plot_widget.winfo_exists() and plot_widget.edit_modified() and plot_widget.cget('state') == tk.NORMAL:
+            plot_widget.edit_modified(False) # Reset internal flag
+            modified = True
+            print(f"GUI DEBUG: 'scene_plot_text' 수정됨.")
 
         # Check Combobox (length)
         length_combo = self.widgets.get('length_combobox')
+        # Check if the event was triggered by this widget specifically
         if event and event.widget == length_combo:
-            modified = True
-            print("GUI DEBUG: Length Combobox 변경됨.")
+            # Compare with AppCore's currently loaded scene setting for length if available
+            current_length = ""
+            if self.app_core.current_loaded_scene_settings:
+                current_length = self.app_core.current_loaded_scene_settings.get('length')
+            # Only mark as modified if the value actually changed
+            if length_combo.get() != current_length:
+                modified = True
+                print("GUI DEBUG: Length Combobox 변경됨.")
 
         # Scale changes are handled by _on_scale_release
 
         if modified:
-            self._trigger_chapter_settings_modified()
-
+            self._trigger_chapter_settings_modified() # This sets the panel's flag for scene snapshot save
 
     def _on_scale_drag(self, event=None):
          self._update_temperature_label()
@@ -329,15 +331,28 @@ class SettingsPanel(ttk.Frame):
         scale = self.widgets.get('temperature_scale')
         if scale and scale.winfo_exists() and scale.cget('state') == tk.NORMAL:
             self._update_temperature_label()
-            print("GUI DEBUG: Temperature Scale 변경됨.")
-            self._trigger_chapter_settings_modified() # 변경 완료 시 플래그 설정
+            # Compare with AppCore's currently loaded scene setting for temperature
+            current_temp = constants.DEFAULT_TEMPERATURE # Default value if not loaded
+            if self.app_core.current_loaded_scene_settings:
+                 loaded_temp_val = self.app_core.current_loaded_scene_settings.get('temperature')
+                 if loaded_temp_val is not None:
+                     try: current_temp = float(loaded_temp_val)
+                     except (ValueError, TypeError): pass
+            # Only trigger modification if the value actually changed significantly
+            new_val = scale.get()
+            if abs(new_val - current_temp) > 0.001: # Use a small tolerance
+                print("GUI DEBUG: Temperature Scale 변경됨.")
+                self._trigger_chapter_settings_modified() # 변경 완료 시 플래그 설정
+            else:
+                print("GUI DEBUG: Temperature Scale 값 변경 없음.")
+
 
     def _trigger_chapter_settings_modified(self):
-        """챕터/장면 관련 설정(아크노트, 장면플롯, 옵션) 변경 시 호출되는 공통 로직"""
+        """장면 스냅샷 관련 설정(플롯, 옵션, 모델) 변경 시 호출되는 공통 로직"""
         # Check AppCore's busy state using is_busy()
         if hasattr(self.app_core, 'is_busy') and not self.app_core.is_busy():
             if not self.chapter_settings_modified_flag:
-                print("GUI DEBUG: 챕터/장면 관련 설정 변경 감지됨. 플래그 설정.")
+                print("GUI DEBUG: 장면 설정(플롯/옵션/모델) 변경 감지됨. 스냅샷 플래그 설정.")
                 self.chapter_settings_modified_flag = True
             self.app_core.update_ui_state() # UI 상태 업데이트 (저장 버튼 활성화 등)
 
@@ -358,10 +373,7 @@ class SettingsPanel(ttk.Frame):
         scale = event.widget
         if not isinstance(scale, ttk.Scale) or scale.cget('state') == tk.DISABLED: return
         try:
-            # Check if click was on the trough
             element = scale.identify(event.x, event.y)
-            # Simplified logic: click moves towards the click position by a fixed increment
-            # This avoids theme-dependent identification issues
             if 'trough' in element:
                 current_val = scale.get()
                 increment = 0.1 # Adjust step
@@ -370,7 +382,6 @@ class SettingsPanel(ttk.Frame):
                 width = scale.winfo_width()
                 if width <= 0: return # Avoid division by zero if width is not yet known
 
-                # Estimate value at the click position
                 clicked_ratio = event.x / width
                 estimated_value_at_click = scale_from + clicked_ratio * value_range
 
@@ -380,15 +391,26 @@ class SettingsPanel(ttk.Frame):
                 elif estimated_value_at_click > current_val + 0.01: # Clicked significantly to the right
                     new_val = current_val + increment
 
-                # Clamp the value within the scale's range
                 new_val = max(scale_from, min(scale_to, new_val))
 
                 if abs(new_val - current_val) > 0.01: # Only set if value changed noticeably
                     scale.set(new_val)
                     self._update_temperature_label()
-                    print("GUI DEBUG: Temperature Scale 클릭으로 변경됨.")
-                    self._trigger_chapter_settings_modified() # Click also triggers modification
-                return "break" # Prevent default slider jump which might be imprecise
+                    # Compare with AppCore's currently loaded scene setting for temperature
+                    current_temp_loaded = constants.DEFAULT_TEMPERATURE
+                    if self.app_core.current_loaded_scene_settings:
+                        loaded_temp_val_click = self.app_core.current_loaded_scene_settings.get('temperature')
+                        if loaded_temp_val_click is not None:
+                             try: current_temp_loaded = float(loaded_temp_val_click)
+                             except (ValueError, TypeError): pass
+                    # Only trigger if changed from original loaded value
+                    if abs(new_val - current_temp_loaded) > 0.001:
+                        print("GUI DEBUG: Temperature Scale 클릭으로 변경됨.")
+                        self._trigger_chapter_settings_modified() # Click also triggers modification
+                    else:
+                        print("GUI DEBUG: Temperature Scale 클릭 (값 변경 없음).")
+
+                return "break" # Prevent default slider jump
         except Exception as e: print(f"GUI ERROR: 온도 스케일 클릭 처리 오류: {e}")
 
 
@@ -399,7 +421,6 @@ class SettingsPanel(ttk.Frame):
             self.settings_frame_outer.grid_remove()
             self.settings_area_visible = False
             btn.config(text="▼ 설정 보이기")
-            # Force hide children regardless of their individual toggle state
             self._update_novel_settings_visibility(force_hide=True)
             self._update_chapter_arc_notes_visibility(force_hide=True)
             self._update_scene_plot_visibility(force_hide=True)
@@ -407,7 +428,6 @@ class SettingsPanel(ttk.Frame):
             self.settings_frame_outer.grid()
             self.settings_area_visible = True
             btn.config(text="▲ 설정 숨기기")
-            # Restore children based on their individual toggle state
             self._update_novel_settings_visibility()
             self._update_chapter_arc_notes_visibility()
             self._update_scene_plot_visibility()
@@ -437,7 +457,6 @@ class SettingsPanel(ttk.Frame):
             wrapper.grid()
             if widget and widget.winfo_exists():
                 is_busy = self.app_core.is_busy() if hasattr(self.app_core, 'is_busy') else False
-                # Novel settings editable only if novel is loaded and not busy
                 widget.config(state=tk.DISABLED if (is_busy or not self.app_core.current_novel_dir) else tk.NORMAL)
         else:
             wrapper.grid_remove()
@@ -452,7 +471,6 @@ class SettingsPanel(ttk.Frame):
             wrapper.grid()
             if widget and widget.winfo_exists():
                  is_busy = self.app_core.is_busy() if hasattr(self.app_core, 'is_busy') else False
-                 # Editable only if a chapter folder is loaded and not busy
                  widget.config(state=tk.DISABLED if (is_busy or not self.app_core.current_chapter_arc_dir) else tk.NORMAL)
         else:
             wrapper.grid_remove()
@@ -467,13 +485,11 @@ class SettingsPanel(ttk.Frame):
             wrapper.grid()
             if widget and widget.winfo_exists():
                  is_busy = self.app_core.is_busy() if hasattr(self.app_core, 'is_busy') else False
-                 # Editable only if a scene is loaded and not busy
                  widget.config(state=tk.DISABLED if (is_busy or not self.app_core.current_scene_path) else tk.NORMAL)
         else:
             wrapper.grid_remove()
             if widget and widget.winfo_exists(): widget.config(state=tk.DISABLED)
 
-    # --- 새 메소드: 동적 레이블 업데이트 ---
     def _update_dynamic_labels(self):
         """Update labels that depend on the currently loaded novel/chapter."""
         novel_label = self.widgets.get('novel_settings_label')
@@ -487,45 +503,39 @@ class SettingsPanel(ttk.Frame):
             if self.app_core.current_chapter_arc_dir:
                 try:
                     folder_name = os.path.basename(self.app_core.current_chapter_arc_dir)
-                    # utils.format_chapter_display_name 사용해서 보기 좋은 이름 가져오기
                     formatted_name = utils.format_chapter_display_name(folder_name)
-                    # "📁 001화: 제목" 에서 "001화: 제목" 부분만 추출 (정규표현식 사용)
                     match = re.match(r"^\s*📁?\s*(.*)", formatted_name) # Allow optional folder icon and leading space
                     chapter_name = match.group(1).strip() if match else folder_name
                 except Exception as e:
                     print(f"GUI WARN: 챕터 이름 포맷 중 오류: {e}")
                     pass # 오류 시 기본값 "챕터" 사용
             arc_label.config(text=f"  ({chapter_name} 설정: 챕터의 전반적인 플롯)")
-    # --- 새 메소드 끝 ---
 
 
     # --- AppCore에서 호출하는 메소드 ---
 
     def update_ui_state(self, is_busy: bool, novel_loaded: bool, chapter_loaded: bool, scene_loaded: bool):
         """AppCore의 상태에 따라 위젯 활성화/비활성화"""
-        # is_busy = self.app_core.is_busy() if hasattr(self.app_core, 'is_busy') else False # Use the provided flag or check directly
         gen_state = tk.DISABLED if is_busy else tk.NORMAL
         combo_state = tk.DISABLED if is_busy else 'readonly'
 
         # API 타입 콤보박스
         api_combo = self.widgets.get('api_type_combobox')
         if api_combo and api_combo.winfo_exists():
-            # 사용 가능한 API가 2개 이상일 때만 활성화
             num_available_apis = sum(1 for models in self.app_core.available_models_by_type.values() if models)
             api_combo.config(state=tk.DISABLED if (is_busy or num_available_apis < 2) else 'readonly')
 
         # 모델 콤보박스
         model_combo = self.widgets.get('model_combobox')
         if model_combo and model_combo.winfo_exists():
-            # 현재 선택된 API 타입에 모델이 있을 때만 활성화
             current_api_models = self.app_core.available_models_by_type.get(self.app_core.current_api_type, [])
             model_combo.config(state=tk.DISABLED if (is_busy or not current_api_models) else 'readonly')
 
         # 온도 스케일 & 길이 콤보박스 (장면 생성 옵션)
         temp_scale = self.widgets.get('temperature_scale')
-        if temp_scale and temp_scale.winfo_exists(): temp_scale.config(state=gen_state)
+        if temp_scale and temp_scale.winfo_exists(): temp_scale.config(state=gen_state if scene_loaded else tk.DISABLED) # 장면 로드 시에만 활성
         length_combo = self.widgets.get('length_combobox')
-        if length_combo and length_combo.winfo_exists(): length_combo.config(state=combo_state)
+        if length_combo and length_combo.winfo_exists(): length_combo.config(state=combo_state if scene_loaded else tk.DISABLED) # 장면 로드 시에만 활성
 
         # 소설 설정 텍스트 (소설 로드 시 & 토글 켜졌을 때 편집 가능)
         self._update_novel_settings_visibility() # Visibility update handles state based on loaded status
@@ -536,7 +546,7 @@ class SettingsPanel(ttk.Frame):
         # 장면 플롯 텍스트 (장면 로드 시 & 토글 켜졌을 때 편집 가능)
         self._update_scene_plot_visibility()
 
-        # 토글 버튼들
+        # 토글 버튼들 (Busy 상태에만 영향받음)
         for key in ['novel_settings_toggle_button', 'chapter_arc_notes_toggle_button', 'scene_plot_toggle_button', 'toggle_settings_button']:
             btn = self.widgets.get(key)
             if btn and btn.winfo_exists(): btn.config(state=gen_state)
@@ -551,12 +561,10 @@ class SettingsPanel(ttk.Frame):
 
         btn_new_scene = self.widgets.get('new_scene_button')
         if btn_new_scene and btn_new_scene.winfo_exists():
-            # 새 장면은 챕터 폴더가 로드되어 있어야 가능
             btn_new_scene.config(state=tk.DISABLED if (is_busy or not chapter_loaded) else tk.NORMAL)
 
         btn_regenerate = self.widgets.get('regenerate_button')
         if btn_regenerate and btn_regenerate.winfo_exists():
-            # 재생성은 장면 파일이 로드되어 있어야 가능
             btn_regenerate.config(state=tk.DISABLED if (is_busy or not scene_loaded) else tk.NORMAL)
 
 
@@ -571,7 +579,6 @@ class SettingsPanel(ttk.Frame):
         api_combo = self.widgets.get('api_type_combobox')
         if api_combo and api_combo.winfo_exists():
              try:
-                 # Ensure the value exists in the list before setting
                  api_display_val = self.app_core.current_api_type.capitalize()
                  if api_display_val in api_combo['values']:
                      api_combo.set(api_display_val)
@@ -586,28 +593,24 @@ class SettingsPanel(ttk.Frame):
         model_combo = self.widgets.get('model_combobox')
         if model_combo and model_combo.winfo_exists():
              try:
-                 # Use scene model if available AND valid for current API, else use AppCore's current session model
                  model_val = scene_settings_data.get('selected_model', self.app_core.selected_model) if scene_settings_data else self.app_core.selected_model
                  current_api_models = self.app_core.available_models_by_type.get(self.app_core.current_api_type, [])
 
                  if model_val and model_val in current_api_models:
                       model_combo.set(model_val)
-                      # Ensure AppCore's session model matches if loaded from scene
                       if model_val != self.app_core.selected_model:
-                           self.app_core.handle_model_change(model_val) # Notify AppCore of change from settings
+                           self.app_core.handle_model_change(model_val) # Notify AppCore
                  elif self.app_core.selected_model in current_api_models:
                       model_combo.set(self.app_core.selected_model)
-                 else: # Fallback if session model is also invalid for current API
+                 else: # Fallback
                       if current_api_models:
                           model_combo.set(current_api_models[0])
-                          # If fallback sets model, update AppCore too
                           if current_api_models[0] != self.app_core.selected_model:
-                              self.app_core.handle_model_change(current_api_models[0])
+                              self.app_core.handle_model_change(current_api_models[0]) # Notify AppCore
                       else:
                           model_combo.set("모델 없음")
-                          # If no models, ensure AppCore model is None
                           if self.app_core.selected_model is not None:
-                              self.app_core.handle_model_change(None)
+                              self.app_core.handle_model_change(None) # Notify AppCore
 
              except tk.TclError: pass
              except Exception as e: print(f"GUI WARN: 모델 콤보박스 설정 중 오류: {e}")
@@ -619,7 +622,6 @@ class SettingsPanel(ttk.Frame):
         if novel_widget and novel_widget.winfo_exists():
              try:
                  novel_value = novel_settings_data.get(novel_key, "") if novel_settings_data else ""
-                 # Determine state based on current conditions BEFORE modifying widget
                  is_novel_visible = self.settings_area_visible and self.novel_settings_widget_visible
                  current_novel_state = tk.DISABLED if (is_busy or not novel_loaded or not is_novel_visible) else tk.NORMAL
 
@@ -630,13 +632,12 @@ class SettingsPanel(ttk.Frame):
                  novel_widget.config(state=current_novel_state) # Restore state
              except tk.TclError: pass
 
-        # --- 챕터 전체 설정 (구 아크 노트) ---
-        arc_key = constants.CHAPTER_ARC_NOTES_KEY # Key remains the same internally
+        # --- 챕터 전체 설정 (아크 노트) ---
+        arc_key = constants.CHAPTER_ARC_NOTES_KEY
         arc_widget = self.widgets.get('chapter_arc_notes_text')
         if arc_widget and arc_widget.winfo_exists():
             try:
                 arc_value = chapter_arc_settings_data.get(arc_key, "") if chapter_arc_settings_data else ""
-                # Determine state based on current conditions BEFORE modifying widget
                 is_arc_visible = self.settings_area_visible and self.chapter_arc_notes_widget_visible
                 current_arc_state = tk.DISABLED if (is_busy or not chapter_loaded or not is_arc_visible) else tk.NORMAL
 
@@ -648,14 +649,13 @@ class SettingsPanel(ttk.Frame):
             except tk.TclError: pass
 
         # --- 장면 설정 (플롯, 온도, 길이) ---
-        settings_source = scene_settings_data if scene_settings_data else {} # Use scene data if available
+        settings_source = scene_settings_data if scene_settings_data else {}
 
         plot_key = constants.SCENE_PLOT_KEY
         plot_widget = self.widgets.get('scene_plot_text')
         if plot_widget and plot_widget.winfo_exists():
             try:
                 plot_value = settings_source.get(plot_key, "")
-                # Determine state based on current conditions BEFORE modifying widget
                 is_plot_visible = self.settings_area_visible and self.scene_plot_widget_visible
                 current_plot_state = tk.DISABLED if (is_busy or not scene_loaded or not is_plot_visible) else tk.NORMAL
 
@@ -671,11 +671,12 @@ class SettingsPanel(ttk.Frame):
         if temp_scale and temp_scale.winfo_exists():
             try:
                 temp_val = float(settings_source.get('temperature', constants.DEFAULT_TEMPERATURE))
-                temp_val = max(0.0, min(2.0, temp_val)) # Clamp between 0 and 2
-                scale_state = temp_scale.cget('state') # Get state BEFORE changing
+                temp_val = max(0.0, min(2.0, temp_val)) # Clamp
+                # Determine state based on whether scene is loaded and not busy
+                current_scale_state = tk.DISABLED if (is_busy or not scene_loaded) else tk.NORMAL
                 temp_scale.config(state=tk.NORMAL) # Enable to set value
                 temp_scale.set(temp_val)
-                temp_scale.config(state=scale_state) # Restore state
+                temp_scale.config(state=current_scale_state) # Restore state
                 self._update_temperature_label()
             except (ValueError, TypeError, tk.TclError): pass
 
@@ -685,15 +686,18 @@ class SettingsPanel(ttk.Frame):
                 length_val = settings_source.get('length', constants.LENGTH_OPTIONS[0])
                 if length_val in constants.LENGTH_OPTIONS: length_combo.set(length_val)
                 else: length_combo.current(0)
+                # Determine state based on whether scene is loaded and not busy
+                current_length_state = tk.DISABLED if (is_busy or not scene_loaded) else 'readonly'
+                length_combo.config(state=current_length_state)
             except tk.TclError: pass
 
-        # --- Update dynamic labels based on loaded state (추가된 호출) ---
         self._update_dynamic_labels()
-        # --- Update end ---
 
         # 로드 후 UI 상태 재조정 및 수정 플래그 리셋
-        self.reset_chapter_modified_flag() # Combined flag reset
-        self.reset_novel_modified_flag() # Reset novel flag too
+        self.reset_chapter_modified_flag() # Scene snapshot flag reset
+        self.reset_novel_modified_flag() # Reset novel flag too (handled by AppCore as well)
+        # Reset Arc Notes specific Tk flag
+        if arc_widget and arc_widget.winfo_exists(): arc_widget.edit_modified(False)
         self.update_ui_state(is_busy, novel_loaded, chapter_loaded, scene_loaded)
 
 
@@ -720,7 +724,7 @@ class SettingsPanel(ttk.Frame):
             try: settings[constants.NOVEL_MAIN_SETTINGS_KEY] = novel_widget.get("1.0", "end-1c").strip()
             except tk.TclError: settings[constants.NOVEL_MAIN_SETTINGS_KEY] = ""
 
-        # 챕터 전체 설정 (구 아크 노트)
+        # 챕터 전체 설정 (아크 노트)
         arc_widget = self.widgets.get('chapter_arc_notes_text')
         if arc_widget and arc_widget.winfo_exists():
             try: settings[constants.CHAPTER_ARC_NOTES_KEY] = arc_widget.get("1.0", "end-1c").strip()
@@ -763,8 +767,6 @@ class SettingsPanel(ttk.Frame):
                  plot_widget.insert("1.0", text)
                  plot_widget.edit_reset(); plot_widget.edit_modified(False)
                  plot_widget.config(state=current_plot_state) # Restore state
-                 # Setting plot programmatically shouldn't trigger modification flag
-                 # Resetting flags might be handled by the caller if needed
              except tk.TclError: pass
 
     def get_novel_settings(self):
@@ -786,13 +788,14 @@ class SettingsPanel(ttk.Frame):
                 widget.edit_reset(); widget.edit_modified(False)
                 widget.yview_moveto(scroll_pos[0])
                 widget.config(state=current_novel_state)
-                # Reset novel specific modification flag in AppCore too (if needed)
+                # Reset novel specific modification flag in AppCore too
                 if hasattr(self.app_core, 'novel_settings_modified_flag'):
                     self.app_core.novel_settings_modified_flag = False
                 self.reset_novel_modified_flag() # Reset internal Tk flag
             except tk.TclError: pass
 
     def clear_scene_settings_fields(self):
+        """Clears Scene Plot, Temperature, Length fields."""
         # 플롯
         plot_widget = self.widgets.get('scene_plot_text')
         if plot_widget and plot_widget.winfo_exists():
@@ -820,10 +823,10 @@ class SettingsPanel(ttk.Frame):
             except tk.TclError: pass
         # 모델 콤보박스는 변경하지 않음
 
-        self.reset_chapter_modified_flag() # Reset combined flag
+        self.reset_chapter_modified_flag() # Reset scene snapshot flag
 
     def clear_chapter_arc_notes_field(self):
-        """Clears only the chapter settings field."""
+        """Clears only the chapter settings (arc notes) field."""
         arc_widget = self.widgets.get('chapter_arc_notes_text')
         if arc_widget and arc_widget.winfo_exists():
              try:
@@ -832,10 +835,11 @@ class SettingsPanel(ttk.Frame):
                  arc_widget.edit_reset(); arc_widget.edit_modified(False)
                  arc_widget.config(state=tk.DISABLED) # Disable after clearing
              except tk.TclError: pass
-        self.reset_chapter_modified_flag() # Reset combined flag
+        # Arc notes modification is handled by AppCore's flag, no need to reset here
         self._update_dynamic_labels() # 라벨 업데이트 호출 추가
 
     def clear_novel_settings(self):
+        """Clears only the novel settings field."""
         widget = self.widgets.get('novel_settings_text')
         if widget and widget.winfo_exists():
             try:
@@ -854,24 +858,20 @@ class SettingsPanel(ttk.Frame):
         if widget and widget.winfo_exists():
             try: widget.edit_modified(False)
             except tk.TclError: pass
-        # AppCore's flag might need reset too, handled where appropriate
+        # AppCore's flag (novel_settings_modified_flag) should be reset by AppCore
 
     def reset_chapter_modified_flag(self):
-        """챕터/장면 관련 위젯들의 내부 수정 플래그 리셋 및 자체 플래그 리셋"""
+        """장면 스냅샷 관련 위젯들의 내부 수정 플래그 리셋 및 자체 플래그 리셋"""
         self.chapter_settings_modified_flag = False
-        # Reset internal Tk flags for text widgets
-        arc_widget = self.widgets.get('chapter_arc_notes_text')
-        if arc_widget and arc_widget.winfo_exists():
-            try: arc_widget.edit_modified(False)
-            except tk.TclError: pass
+        # Reset internal Tk flags for scene-related text widgets
         plot_widget = self.widgets.get('scene_plot_text')
         if plot_widget and plot_widget.winfo_exists():
             try: plot_widget.edit_modified(False)
             except tk.TclError: pass
-        # AppCore의 UI 상태 업데이트 요청 (저장 버튼 등)
-        # Check if AppCore is available before calling update_ui_state
+        # Resetting flags for combo/scale is not directly needed, value comparison handles it.
+
+        # Request UI update in AppCore (Save button state etc.)
         if hasattr(self, 'app_core') and self.app_core:
-            # Call update_ui_state without arguments; it fetches current state internally
              self.app_core.update_ui_state()
 
     def set_status(self, message, is_error=False):
