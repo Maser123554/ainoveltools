@@ -376,14 +376,18 @@ def show_rename_dialog(parent_root, title, prompt, initial_value):
 
 
 def show_api_key_dialog(parent_root, current_ask_pref):
-    """API 키 관리 및 '다시 묻지 않기' 설정 대화상자."""
+    """API 키 관리 및 '다시 묻지 않기' 설정 대화상자.
+    저장 시 {'keys': {'gemini': '...', 'claude': ..., 'gpt': ...}, 'ask_pref': bool} 반환.
+    'keys' 딕셔너리의 값은 입력된 키 문자열, 비워두면 빈 문자열(""), 변경하지 않으면 None.
+    취소 시 None 반환.
+    """
     dialog = tk.Toplevel(parent_root)
     dialog.title("🔑 API 키 관리")
     dialog.geometry("550x350")
     dialog.transient(parent_root)
 
-    entered_keys = {api: "" for api in constants.SUPPORTED_API_TYPES}
     ask_pref_var = tk.BooleanVar(value=current_ask_pref)
+    # 결과 구조: keys는 API 타입별 입력값 (None은 '변경 안 함' 의미), ask_pref는 체크박스 상태
     result = {"keys": None, "ask_pref": None}
 
     key_statuses = {}
@@ -398,9 +402,31 @@ def show_api_key_dialog(parent_root, current_ask_pref):
     main_frame.pack(fill=tk.BOTH, expand=True)
 
     api_frames = {}
-    api_entries = {}
+    api_entries = {} # {api_type: entry_widget}
     api_status_labels = {}
-    placeholder_text = "새 키 입력 또는 비우기" # Placeholder text constant
+    placeholder_text = "새 키 입력 또는 비우기" # 플레이스홀더 텍스트 정의
+
+    # --- 핸들러 정의 (플레이스홀더 및 마스크 관리) ---
+    # show 옵션과 실제 값을 비교하여 플레이스홀더 상태 관리
+    def create_focus_in_handler(entry_widget):
+        def handler(event):
+            # 포커스 받으면 항상 show="*" (마스크 적용)
+            entry_widget.config(show="*")
+            # 플레이스홀더 텍스트가 있으면 지움 (실제 값 변경)
+            if entry_widget.get() == placeholder_text:
+                entry_widget.delete(0, tk.END)
+        return handler
+
+    def create_focus_out_handler(entry_widget):
+        def handler(event):
+            # 포커스 잃고 내용이 비었으면 플레이스홀더 보여주기 (값은 비우고 show 해제)
+            if not entry_widget.get():
+                entry_widget.delete(0, tk.END) # 값 확실히 비우기
+                entry_widget.insert(0, placeholder_text) # 플레이스홀더 삽입
+                entry_widget.config(show="") # 마스크 해제하여 플레이스홀더 보이게
+            else:
+                entry_widget.config(show="*") # 내용 있으면 마스크 유지
+        return handler
 
     row_idx = 0
     for api_type in constants.SUPPORTED_API_TYPES:
@@ -421,28 +447,18 @@ def show_api_key_dialog(parent_root, current_ask_pref):
         status_lbl.grid(row=0, column=0, padx=(0, 10), sticky="w")
         api_status_labels[api_type] = status_lbl
 
-        key_entry = ttk.Entry(frame, width=40, show="") # Start with mask off for placeholder
+        key_entry = ttk.Entry(frame, width=40, show="") # 초기에는 show="" 상태
         key_entry.grid(row=0, column=1, sticky="ew", padx=(0, 5))
         api_entries[api_type] = key_entry
 
-        def on_focus_in(event, entry=key_entry, placeholder=placeholder_text):
-             # Use captured variables entry and placeholder
-            if entry.cget('foreground') == 'grey': # Check if it's placeholder text
-                entry.delete(0, tk.END)
-                entry.config(show="*", foreground='black')
+        # 각 엔트리 위젯에 대한 핸들러 생성 및 바인딩
+        focus_in_handler = create_focus_in_handler(key_entry)
+        focus_out_handler = create_focus_out_handler(key_entry)
+        key_entry.bind("<FocusIn>", focus_in_handler)
+        key_entry.bind("<FocusOut>", focus_out_handler)
 
-        def on_focus_out(event, entry=key_entry, placeholder=placeholder_text):
-            # Use captured variables entry and placeholder
-            if not entry.get():
-                entry.config(show="", foreground='grey')
-                entry.insert(0, placeholder)
-
-        # Bind with default arguments captured by lambda (or use functools.partial)
-        key_entry.bind("<FocusIn>", on_focus_in)
-        key_entry.bind("<FocusOut>", on_focus_out)
-
-        # Initialize placeholder state correctly
-        on_focus_out(None, entry=key_entry, placeholder=placeholder_text) # Call manually for initial setup
+        # 초기 플레이스홀더 상태 설정 (on_focus_out 로직 호출)
+        focus_out_handler(None) # 이벤트 객체는 필요 없으므로 None 전달
 
         row_idx += 1
 
@@ -456,20 +472,25 @@ def show_api_key_dialog(parent_root, current_ask_pref):
     btn_frame = ttk.Frame(main_frame)
     btn_frame.grid(row=row_idx, column=0, pady=(10, 0), sticky='e')
 
+    # --- on_save 함수 수정 ---
     def on_save():
+        entered_keys_from_dialog = {} # 결과를 저장할 새 딕셔너리
         for api_t, entry_widget in api_entries.items():
-            if entry_widget.cget('foreground') == 'grey': # Check if placeholder is showing
-                entered_keys[api_t] = "" # Treat as empty
+            current_value = entry_widget.get()
+            # 현재 값이 플레이스홀더와 같으면 변경 없음(None)으로 처리
+            if current_value == placeholder_text:
+                entered_keys_from_dialog[api_t] = None # 변경 없음을 None으로 표시
             else:
-                entered_keys[api_t] = entry_widget.get().strip()
+                # 플레이스홀더가 아니면 실제 입력값 사용 (빈 문자열일 수도 있음)
+                entered_keys_from_dialog[api_t] = current_value.strip()
 
-        result["keys"] = entered_keys
+        result["keys"] = entered_keys_from_dialog # 수정된 딕셔너리 할당
         result["ask_pref"] = ask_pref_var.get()
         dialog.destroy()
 
     def on_cancel():
-        result["keys"] = None
-        result["ask_pref"] = None
+        result["keys"] = None # 취소 시 keys를 None으로 설정
+        result["ask_pref"] = None # 취소 시 ask_pref도 None으로 설정
         dialog.destroy()
 
     ttk.Button(btn_frame, text="저장", command=on_save).pack(side=tk.RIGHT, padx=(5, 0))
@@ -477,6 +498,7 @@ def show_api_key_dialog(parent_root, current_ask_pref):
 
     dialog.protocol("WM_DELETE_WINDOW", on_cancel)
     _grab_and_wait(dialog)
+    # 저장 또는 취소 여부에 따라 결과 반환 (취소 시 None 반환)
     return result if result["keys"] is not None else None
 
 

@@ -327,6 +327,9 @@ class AppCore:
         if self._check_and_handle_unsaved_changes("프로그램 종료"):
             print("CORE: 변경사항 처리 완료. 프로그램 종료.")
             if self.gui_manager and self.gui_manager.root:
+                # --- 타이머 중지 추가 ---
+                self.stop_timer()
+                # --- ---
                 self.gui_manager.root.destroy()
             else:
                 sys.exit(0)
@@ -878,17 +881,60 @@ class AppCore:
                 loaded_scene_settings = file_handler.load_scene_settings(chapter_dir, scene_num)
                 scene_content = file_handler.load_scene_content(chapter_dir, scene_num)
 
+                # 장면 로드 시 API 타입과 모델 업데이트 로직 추가
+                saved_api_type = loaded_scene_settings.get('selected_api_type')
                 saved_model = loaded_scene_settings.get('selected_model')
                 model_name_to_use = self.selected_model
-                if saved_model and saved_model in self.available_models:
+                api_type_to_use = self.current_api_type
+
+                api_changed = False
+                if saved_api_type and saved_api_type in constants.SUPPORTED_API_TYPES and saved_api_type != self.current_api_type:
+                    # Check if the saved API type has available models now
+                    if self.available_models_by_type.get(saved_api_type):
+                        print(f"CORE INFO: 로드된 장면 설정에서 API 타입 변경 시도: {self.current_api_type} -> {saved_api_type}")
+                        self.current_api_type = saved_api_type
+                        self.available_models = self.available_models_by_type.get(saved_api_type, [])
+                        self.summary_model = self.summary_models.get(saved_api_type)
+                        self.config[constants.CONFIG_API_TYPE_KEY] = saved_api_type
+                        file_handler.save_config(self.config) # Save API type change
+                        api_type_to_use = saved_api_type
+                        api_changed = True # Flag that API changed
+                        self.selected_model = None # Reset model selection as API changed
+                        model_name_to_use = None
+                    else:
+                        print(f"CORE WARN: 로드된 API 타입 '{saved_api_type}' 사용 불가 (모델 없음). 현재 '{self.current_api_type}' 유지.")
+
+                # Model selection logic (re-evaluated if API changed)
+                current_api_models = self.available_models # Use the potentially updated available_models
+                if saved_model and saved_model in current_api_models:
                     if saved_model != self.selected_model:
-                        print(f"CORE INFO: 로드된 장면 설정에서 모델 변경 시도: {self.selected_model} -> {saved_model}")
+                        print(f"CORE INFO: 로드된 장면 설정 또는 API 변경으로 모델 변경: {self.selected_model} -> {saved_model}")
                         self.selected_model = saved_model
                         self.config[constants.CONFIG_MODEL_KEY] = saved_model
-                        file_handler.save_config(self.config)
+                        file_handler.save_config(self.config) # Save model change
                     model_name_to_use = saved_model
+                elif self.selected_model and self.selected_model in current_api_models:
+                     print(f"CORE INFO: 로드된 장면 모델('{saved_model}') 사용 불가/없음. 현재 세션 모델('{self.selected_model}') 유지.")
+                     model_name_to_use = self.selected_model
+                elif current_api_models: # Fallback if session model also invalid after API change
+                     default_model = None
+                     if api_type_to_use == constants.API_TYPE_GEMINI: default_model = constants.DEFAULT_GEMINI_MODEL
+                     elif api_type_to_use == constants.API_TYPE_CLAUDE: default_model = constants.DEFAULT_CLAUDE_MODEL
+                     elif api_type_to_use == constants.API_TYPE_GPT: default_model = constants.DEFAULT_GPT_MODEL
+
+                     if default_model and default_model in current_api_models:
+                          self.selected_model = default_model
+                     else:
+                          self.selected_model = current_api_models[0]
+                     print(f"CORE INFO: 저장/세션 모델 유효하지 않아 대체 모델로 설정: {self.selected_model}")
+                     model_name_to_use = self.selected_model
                 else:
-                    print(f"CORE INFO: 로드된 장면 모델('{saved_model}') 사용 불가 또는 없음. 현재 세션 모델('{self.selected_model}') 유지.")
+                     print(f"CORE WARN: API '{api_type_to_use}'에 유효한 모델 없음.")
+                     self.selected_model = None
+                     model_name_to_use = None
+
+                # Update loaded settings with the final determined API/model
+                loaded_scene_settings['selected_api_type'] = api_type_to_use
                 loaded_scene_settings['selected_model'] = model_name_to_use
 
                 self.current_scene_path = scene_path
@@ -913,10 +959,12 @@ class AppCore:
                 print(f"CORE: 재생성 컨텍스트 업데이트용 이전 내용 로드 중 (챕터: '{os.path.basename(chapter_dir)}', 기준: {scene_num}화)")
                 prev_content_for_regen_context = file_handler.load_previous_scenes_in_chapter(chapter_dir, scene_num)
                 self.last_generation_previous_content = prev_content_for_regen_context if prev_content_for_regen_context is not None else ""
-                self.last_generation_settings_snapshot = None
+                # Regenerate needs snapshot, loading shouldn't set it yet
+                self.last_generation_settings_snapshot = None # Explicitly clear snapshot on load
 
                 ch_str = self._get_chapter_number_str_from_folder(chapter_dir)
-                status_suffix = " (설정 로드됨)"
+                api_model_info = f" ({api_type_to_use.capitalize()}/{model_name_to_use or '모델 없음'})" if model_name_to_use else ""
+                status_suffix = f" (설정 로드됨{api_model_info})"
                 self.update_ui_status_and_state(f"✅ [{self.current_novel_name}] {ch_str} - {scene_num:03d} 장면 불러옴{status_suffix}.",
                                                 generating=False, novel_loaded=True, chapter_loaded=True, scene_loaded=True)
 
@@ -1339,11 +1387,10 @@ class AppCore:
         dialog_result = gui_dialogs.show_api_key_dialog(self.gui_manager.root, current_ask_pref)
         if dialog_result is None: print("CORE: API 키 관리 취소됨."); return
 
-        keys_changed = dialog_result.get("keys")
+        keys_changed = dialog_result.get("keys") # 이제 None 또는 실제 입력값 포함
         new_ask_pref = dialog_result.get("ask_pref")
         config_updated = False
-        api_reconfigured = False
-        valid_keys_to_save = {}
+        keys_actually_saved = False # 저장 성공 여부 플래그 추가
 
         if new_ask_pref is not None and new_ask_pref != current_ask_pref:
             print(f"CORE: 시작 시 키 확인 설정 변경됨: {current_ask_pref} -> {new_ask_pref}")
@@ -1351,45 +1398,59 @@ class AppCore:
             config_updated = True
 
         if keys_changed:
-            valid_keys_to_save = {api: key for api, key in keys_changed.items() if key}
-            if valid_keys_to_save:
-                print(f"CORE: 변경된 API 키 저장 시도: {list(valid_keys_to_save.keys())}")
-                if file_handler.save_api_keys(valid_keys_to_save):
+            # --- 수정: None이 아니고, strip() 후 비어있지 않은 키만 저장 대상으로 필터링 ---
+            keys_to_actually_save = {
+                api: key.strip()
+                for api, key in keys_changed.items()
+                if key is not None # None 값 제외 (변경 없음 의미)
+            }
+            # 필터링 후 빈 문자열도 저장할 수 있게 하려면 위 조건에서 and key.strip() 제거
+
+            # 실제로 저장할 키가 있을 때만 save_api_keys 호출
+            if keys_to_actually_save:
+                print(f"CORE: 저장할 API 키 (사용자 입력/수정됨): {list(keys_to_actually_save.keys())}")
+                if file_handler.save_api_keys(keys_to_actually_save):
                     print("CORE: API 키 .env 파일 저장 성공.")
-                    print("CORE: API 설정 및 모델 목록 새로고침 시도...")
-                    try:
-                        api_handler.configure_apis()
-                        self.available_models_by_type = api_handler.get_available_models()
-                        api_reconfigured = True
-                        self._validate_and_update_models_after_reconfig()
-                        self.gui_manager.show_message("info", "저장 완료", "API 키가 저장되었습니다.\n모델 목록이 업데이트되었을 수 있습니다.")
-                    except Exception as e:
-                         print(f"CORE ERROR: 키 저장 후 API 재설정/모델 로드 실패: {e}")
-                         traceback.print_exc()
-                         self.gui_manager.show_message("error", "오류", f"API 키는 저장되었으나, API 재설정 또는 모델 목록 로드 중 오류 발생:\n{e}")
+                    keys_actually_saved = True
+                    self.gui_manager.show_message("info", "저장 완료 및 재시작 권장",
+                                                  f"{len(keys_to_actually_save)}개 API 키가 저장되었습니다.\n"
+                                                  "변경된 키를 완전히 적용하려면 프로그램을 다시 시작해주세요.")
                 else:
                     self.gui_manager.show_message("error", "저장 실패", "API 키를 .env 파일에 저장하는 데 실패했습니다.")
             else:
-                 print("CORE INFO: API 키 관리 대화상자에서 변경된 키 없음.")
+                print("CORE INFO: API 키 관리 대화상자에서 저장할 새 키 입력/변경 없음.")
+                # 키 변경이 없었더라도, ask_pref 설정은 저장될 수 있음
+                if config_updated:
+                     if file_handler.save_config(self.config):
+                         print("CORE: 키 확인 설정 config.json 저장 완료.")
+                         self.gui_manager.show_message("info", "설정 저장됨", "시작 시 키 확인 설정만 변경되었습니다.")
+                     else:
+                          self.gui_manager.show_message("error", "저장 실패", "키 확인 설정을 config.json에 저장 실패.")
+                else: # 키 변경도 없고, 설정 변경도 없을 때
+                    self.gui_manager.show_message("info", "변경 없음", "변경된 API 키 또는 설정이 없습니다.")
 
-        if config_updated:
+        # --- config_updated 처리 로직 (keys_changed 블록 바깥으로 이동 및 수정) ---
+        # 키 저장이 시도되지 않았고 (keys_to_actually_save가 비어있었고)
+        # config만 업데이트 되었을 경우 저장 시도
+        elif config_updated: # 'elif' 사용: keys_changed가 없거나, 있었지만 저장할게 없었을 경우 + config만 바뀜
             if file_handler.save_config(self.config):
                 print("CORE: 키 확인 설정 config.json 저장 완료.")
-                if not valid_keys_to_save:
-                     self.gui_manager.show_message("info", "저장 완료", "시작 시 키 확인 설정이 저장되었습니다.")
+                self.gui_manager.show_message("info", "설정 저장됨", "시작 시 키 확인 설정이 저장되었습니다.")
             else:
-                 self.gui_manager.show_message("error", "저장 실패", "키 확인 설정을 config.json에 저장 실패.")
+                self.gui_manager.show_message("error", "저장 실패", "키 확인 설정을 config.json에 저장 실패.")
 
-        if api_reconfigured:
-             print("CORE: API 재설정으로 인한 UI 업데이트 중...")
-             if self.gui_manager.settings_panel:
-                 self.gui_manager.settings_panel.populate_widgets(
-                     self.current_novel_settings,
-                     self.current_loaded_chapter_arc_settings,
-                     self.current_loaded_scene_settings
-                 )
-             self.update_window_title()
-             self.update_ui_state()
+        # --- UI 업데이트 로직 제거 또는 수정 ---
+        # if api_reconfigured: # 제거
+        #      print("CORE: API 재설정으로 인한 UI 업데이트 중...") # 제거
+        #      if self.gui_manager.settings_panel: # 제거
+        #          self.gui_manager.settings_panel.populate_widgets( # 제거
+        #              self.current_novel_settings, # 제거
+        #              self.current_loaded_chapter_arc_settings, # 제거
+        #              self.current_loaded_scene_settings # 제거
+        #          ) # 제거
+        #      self.update_window_title() # 제거
+        #      self.update_ui_state() # 제거
+        # --- ---
 
 
     def handle_system_prompt_dialog(self):
@@ -1672,6 +1733,7 @@ class AppCore:
              settings['temperature'] = panel_settings.get('temperature', constants.DEFAULT_TEMPERATURE)
              settings['length'] = panel_settings.get('length', constants.LENGTH_OPTIONS[0])
              settings['selected_model'] = panel_settings.get('selected_model', self.selected_model)
+             settings['selected_api_type'] = panel_settings.get('selected_api_type', self.current_api_type) # API 타입도 읽어오기
 
         return settings
 
@@ -1768,25 +1830,40 @@ class AppCore:
             plot_for_prompt = scene_specific_settings.get(constants.SCENE_PLOT_KEY, "")
             length_option = scene_specific_settings.get('length', constants.LENGTH_OPTIONS[0])
             temperature_val = scene_specific_settings.get('temperature', constants.DEFAULT_TEMPERATURE)
-            current_api_type = self.current_api_type
-            session_model = self.selected_model
+            # Use the API type passed to the function, which should reflect the current session state
+            current_api_type = api_type
+            session_model = self.selected_model # Use the current session model as default
             model_from_settings = scene_specific_settings.get('selected_model')
             model_name_to_use = session_model
 
-            if model_from_settings and model_from_settings in self.available_models_by_type.get(current_api_type, []):
+            # Validate the model from settings against the *current* API type's models
+            current_api_valid_models = self.available_models_by_type.get(current_api_type, [])
+            if model_from_settings and model_from_settings in current_api_valid_models:
                 model_name_to_use = model_from_settings
-                print(f"CORE DEBUG: Using model from scene settings: {model_name_to_use}")
-            elif session_model and session_model in self.available_models_by_type.get(current_api_type, []):
+                print(f"CORE DEBUG: Using model from scene settings: {model_name_to_use} (API: {current_api_type})")
+            elif session_model and session_model in current_api_valid_models:
                 model_name_to_use = session_model
-                print(f"CORE DEBUG: Using current session model: {model_name_to_use}")
+                print(f"CORE DEBUG: Using current session model: {model_name_to_use} (API: {current_api_type})")
             else:
-                valid_models = self.available_models_by_type.get(current_api_type, [])
-                if valid_models:
-                    model_name_to_use = valid_models[0]
-                    print(f"CORE WARN: Invalid model in settings/session, falling back to first available: {model_name_to_use}")
+                # Fallback if both settings and session models are invalid for the current API
+                if current_api_valid_models:
+                    # Try default model for this API first
+                    default_model_for_api = None
+                    if current_api_type == constants.API_TYPE_GEMINI: default_model_for_api = constants.DEFAULT_GEMINI_MODEL
+                    elif current_api_type == constants.API_TYPE_CLAUDE: default_model_for_api = constants.DEFAULT_CLAUDE_MODEL
+                    elif current_api_type == constants.API_TYPE_GPT: default_model_for_api = constants.DEFAULT_GPT_MODEL
+
+                    if default_model_for_api and default_model_for_api in current_api_valid_models:
+                        model_name_to_use = default_model_for_api
+                        print(f"CORE WARN: Invalid model in settings/session for {current_api_type}, falling back to default: {model_name_to_use}")
+                    else:
+                        model_name_to_use = current_api_valid_models[0]
+                        print(f"CORE WARN: Invalid model in settings/session for {current_api_type}, falling back to first available: {model_name_to_use}")
                 else:
                     raise ValueError(f"No valid models available for API type '{current_api_type}'")
 
+            # Update the settings snapshot to reflect the model *actually* used for generation
+            scene_specific_settings['selected_api_type'] = current_api_type # Ensure API type is in snapshot
             scene_specific_settings['selected_model'] = model_name_to_use
 
             system_prompt_val = self.system_prompt
@@ -1802,8 +1879,9 @@ class AppCore:
             )
             if not prompt_text: raise ValueError("프롬프트 생성 실패.")
 
+            # Create settings snapshot (include API type and the final model)
             scene_settings_snapshot = {}
-            keys_for_snapshot = [constants.SCENE_PLOT_KEY, 'temperature', 'length', 'selected_model']
+            keys_for_snapshot = [constants.SCENE_PLOT_KEY, 'temperature', 'length', 'selected_api_type', 'selected_model']
             for key in keys_for_snapshot:
                  if key in scene_specific_settings:
                      scene_settings_snapshot[key] = scene_specific_settings[key]
@@ -1827,8 +1905,10 @@ class AppCore:
 
         self.is_generating = True
         self.output_text_modified = False
-        self.arc_settings_modified_flag = False
+        # Do not reset arc_settings_modified_flag here, generation doesn't affect it
+        # self.arc_settings_modified_flag = False
         if self.gui_manager and self.gui_manager.settings_panel:
+             # Reset only scene settings modified flag, not novel/arc
              self.gui_manager.settings_panel.reset_chapter_modified_flag()
         if self.gui_manager and self.gui_manager.output_panel:
              self.gui_manager.output_panel.reset_modified_flag()
@@ -1844,7 +1924,7 @@ class AppCore:
         result_content = None; token_data = None; is_api_call_error = False; error_message_detail = ""
         thread_id = threading.get_ident()
         target_file_str = f"{os.path.basename(target_chapter_dir)}/{target_scene_number:03d}.txt"
-        print(f"CORE THREAD {thread_id}: 생성 작업 시작 (API: {api_type}, Target: {target_file_str})...")
+        print(f"CORE THREAD {thread_id}: 생성 작업 시작 (API: {api_type}, Model: {model_name}, Target: {target_file_str})...")
 
         try:
             api_result, token_data = api_handler.generate_webnovel_scene_api_call(
@@ -1863,6 +1943,7 @@ class AppCore:
             result_content = f"오류 발생: {error_message_detail}"; is_api_call_error = True; token_data = None
         finally:
             if self.gui_manager and self.gui_manager.root and self.gui_manager.root.winfo_exists():
+                # Pass the settings_snapshot correctly to the processing function
                 self.gui_manager.root.after(0, self._process_generation_result,
                                             result_content, token_data, target_chapter_dir, target_scene_number,
                                             settings_snapshot, is_new_scene, is_api_call_error,
@@ -1880,7 +1961,7 @@ class AppCore:
 
         if not self.gui_manager or not self.gui_manager.root or not self.gui_manager.root.winfo_exists():
              print("CORE WARN: 결과 처리 중단 - GUI 없음.")
-             self.update_ui_state()
+             self.update_ui_state() # Update state even if GUI gone
              return
 
         generated_content = result_data if isinstance(result_data, str) else "오류: 잘못된 데이터 타입 수신"
@@ -1911,23 +1992,29 @@ class AppCore:
                  saved_content_path = file_handler.save_scene_content(target_chapter_dir, target_scene_number, generated_content)
 
                  if saved_content_path:
-                     snapshot_with_tokens = settings_snapshot.copy()
+                     # Use the settings_snapshot received from the thread
+                     snapshot_with_tokens = settings_snapshot.copy() if settings_snapshot else {}
                      snapshot_with_tokens[constants.TOKEN_INFO_KEY] = final_token_info
 
                      print(f"CORE: 장면 설정(스냅샷+토큰) 저장 시도: {target_file_str}_settings.json")
                      if file_handler.save_scene_settings(target_chapter_dir, target_scene_number, snapshot_with_tokens):
                          saved_scene_path = saved_content_path
                          ch_str = self._get_chapter_number_str_from_folder(target_chapter_dir)
-                         status_message = f"✅ [{self.current_novel_name}] {ch_str} - {target_scene_number:03d} 장면 {action_desc} 완료! ({char_count_str}{time_str_display})"
+                         api_name = snapshot_with_tokens.get('selected_api_type', '?').capitalize()
+                         model_name = snapshot_with_tokens.get('selected_model', '?')
+                         status_message = f"✅ [{self.current_novel_name}] {ch_str} - {target_scene_number:03d} 장면 {action_desc} 완료! ({api_name}/{model_name}, {char_count_str}{time_str_display})"
                          print(f"CORE: 장면 {action_desc} 성공 및 저장 완료: {saved_scene_path}")
 
                          self.current_chapter_arc_dir = target_chapter_dir
                          self.current_scene_path = saved_scene_path
+                         # Update loaded settings with the full snapshot including tokens
                          self.current_loaded_scene_settings = snapshot_with_tokens.copy()
 
-                         self.last_generation_settings_snapshot = settings_snapshot.copy()
+                         # Store snapshot *without* tokens for potential future regeneration
+                         self.last_generation_settings_snapshot = settings_snapshot.copy() if settings_snapshot else {}
                          self.last_generation_previous_content = previous_content
 
+                         # Repopulate settings panel with the newly loaded/generated settings
                          self.populate_settings_panel(self.current_novel_settings, self.current_loaded_chapter_arc_settings, self.current_loaded_scene_settings)
                          self.output_text_modified = False
                          if self.gui_manager and self.gui_manager.output_panel: self.gui_manager.output_panel.reset_modified_flag()
@@ -1941,15 +2028,20 @@ class AppCore:
                      else:
                          status_message = f"⚠️ 내용 저장됨, 장면 설정 저장 실패. ({char_count_str}{time_str_display})"
                          print(f"CORE ERROR: 장면 설정 저장 실패: {target_file_str}_settings.json")
+                         # Still update current state even if settings save failed
                          self.current_chapter_arc_dir = target_chapter_dir
                          self.current_scene_path = saved_content_path
-                         self.current_loaded_scene_settings = {}
-                         novel_dir_for_summary = None
+                         self.current_loaded_scene_settings = {} # Clear loaded settings as save failed
+                         self.last_generation_settings_snapshot = None # Clear snapshot
+                         self.last_generation_previous_content = None
+                         novel_dir_for_summary = None # Don't summarize if settings save failed
 
                  else:
                      status_message = f"⚠️ 생성 성공, 내용 저장 실패. ({char_count_str}{time_str_display})"
                      print(f"CORE ERROR: 장면 내용 저장 실패: {target_file_str}.txt")
                      self.current_scene_path = None; self.current_loaded_scene_settings = {}
+                     self.last_generation_settings_snapshot = None # Clear snapshot
+                     self.last_generation_previous_content = None
                      self.refresh_treeview_data()
                      novel_dir_for_summary = None
 
@@ -1958,25 +2050,28 @@ class AppCore:
                   status_message = "⚠️ AI가 빈 내용을 생성했습니다. 플롯이나 설정을 확인하세요."
                   print(f"CORE WARN: 빈 내용 생성됨 (Target: {target_file_str})")
              else:
-                  status_message = generated_content
+                  status_message = generated_content # Display the error message from API/thread
                   print(f"CORE ERROR: 장면 {action_desc} 실패 - {status_message}")
 
-             self.last_generation_settings_snapshot = None
+             self.last_generation_settings_snapshot = None # Clear snapshot on error
              self.last_generation_previous_content = None
 
              if is_new_scene:
+                 # If a new scene failed, clear the path and settings
                  self.current_scene_path = None
                  self.current_loaded_scene_settings = {}
-                 self.refresh_treeview_data()
+                 self.refresh_treeview_data() # Refresh tree to remove potential placeholder
 
              novel_dir_for_summary = None
 
-        final_scene_loaded = bool(saved_scene_path or (not is_new_scene and self.current_scene_path))
+        # Update UI state based on the final outcome
+        final_scene_loaded = bool(saved_scene_path or (not is_new_scene and self.current_scene_path and not is_error))
         final_novel_loaded = bool(self.current_novel_dir)
         self.update_ui_status_and_state(status_message, generating=False, novel_loaded=final_novel_loaded, chapter_loaded=bool(self.current_chapter_arc_dir), scene_loaded=final_scene_loaded)
         if status_message.startswith("✅") and self.gui_manager:
              self.gui_manager.schedule_status_clear(status_message, 5000)
 
+        # Trigger summary only if successful and novel dir is known
         if novel_dir_for_summary:
              self._trigger_summary_generation(novel_dir_for_summary)
 
@@ -1997,13 +2092,27 @@ class AppCore:
         """타이머 중지"""
         if not self.gui_manager or not self.gui_manager.root: return
         if self.timer_after_id:
-            try: self.gui_manager.root.after_cancel(self.timer_after_id)
-            except Exception: pass
-            self.timer_after_id = None
+            try:
+                # 루트 윈도우가 존재하는지 확인 후 취소 시도
+                if self.gui_manager.root.winfo_exists():
+                    self.gui_manager.root.after_cancel(self.timer_after_id)
+                else:
+                    print("GUI WARN: stop_timer - Root window destroyed before timer cancel.")
+            except tk.TclError as e: # TclError도 처리
+                print(f"GUI WARN: Timer cancel error (TclError): {e}")
+            except Exception as e: # 기타 예외 처리
+                print(f"GUI WARN: Timer cancel error: {e}")
+            finally: # 에러 발생 여부와 관계없이 ID 초기화
+                self.timer_after_id = None
 
     def _update_timer_display(self):
         """타이머 상태 표시줄 업데이트 (주기적 호출)"""
         if not self.gui_manager or not self.gui_manager.root: return
+        # Check if the root window still exists before proceeding
+        if not self.gui_manager.root.winfo_exists():
+            self.timer_after_id = None # Stop the timer if window is gone
+            return
+
         if self.is_generating or self.is_summarizing or self.is_capturing:
             elapsed_time = time.time() - self.start_time if self.start_time > 0 else 0
             spinner_icons = ["◐", "◓", "◑", "◒"]
@@ -2015,9 +2124,14 @@ class AppCore:
             elif self.is_capturing: status_prefix = "🖼️ 내용 이미지 캡처 중..."
 
             self.update_status_bar(f"{icon} {status_prefix} ({elapsed_time:.1f}초)")
+            # Schedule next update only if window still exists
             if self.gui_manager.root.winfo_exists():
-                 self.timer_after_id = self.gui_manager.root.after(150, self._update_timer_display)
-            else: self.timer_after_id = None
+                try:
+                    self.timer_after_id = self.gui_manager.root.after(150, self._update_timer_display)
+                except tk.TclError: # Handle case where widget is destroyed between check and after()
+                    self.timer_after_id = None
+            else:
+                self.timer_after_id = None
 
 
     # --- Summary Logic ---
@@ -2028,7 +2142,7 @@ class AppCore:
 
         if not summary_model_for_current_api:
             print(f"CORE INFO: 현재 API({current_api.capitalize()})에 설정된 요약 모델 없음. 요약 건너뜀.")
-            self.update_status_bar(f"⚠️ {current_api.capitalize()} 요약 모델 미설정")
+            self.update_status_bar_conditional(f"⚠️ {current_api.capitalize()} 요약 모델 미설정")
             if self.gui_manager: self.gui_manager.schedule_status_clear(f"⚠️ {current_api.capitalize()} 요약 모델 미설정", 3000)
             return
         if not novel_dir or not os.path.isdir(novel_dir): return
@@ -2085,21 +2199,28 @@ class AppCore:
         self.is_summarizing = False
         self.stop_timer()
 
+        # Ensure UI elements exist before proceeding
         if not self.gui_manager or not self.gui_manager.settings_panel:
-             print("CORE WARN: 요약 결과 처리 실패 - GUI 없음")
-             self.update_ui_state()
-             return
+            print("CORE WARN: 요약 결과 처리 실패 - GUI 없음")
+            self.update_ui_state() # Update state even if GUI gone
+            return
+        if not self.gui_manager.root or not self.gui_manager.root.winfo_exists():
+            print("CORE WARN: 요약 결과 처리 실패 - Root window destroyed")
+            self.update_ui_state()
+            return
 
         if error_detail:
             print(f"CORE ERROR: 요약 생성 실패: {error_detail}")
             self.update_status_bar_conditional("⚠️ 이전 줄거리 요약 실패.")
         elif summary_text is not None:
             print(f"CORE: 요약 생성 성공. 길이: {len(summary_text)}자")
+            # Check if the novel being summarized is still the currently loaded novel
             if not self.current_novel_dir or os.path.normpath(novel_dir) != os.path.normpath(self.current_novel_dir):
                 print("CORE WARN: 요약 완료 시점 소설과 현재 로드된 소설 불일치. 설정 파일 업데이트 건너뜀.")
             else:
                 try:
                     novel_key = constants.NOVEL_MAIN_SETTINGS_KEY
+                    # Get current text *from the widget* to preserve user edits made before summary finished
                     current_novel_setting_text = self.gui_manager.settings_panel.get_novel_settings() or ""
                     summary_header = constants.SUMMARY_HEADER
                     text_before_summary = current_novel_setting_text
@@ -2117,9 +2238,11 @@ class AppCore:
                     print(f"CORE: 업데이트된 소설 설정 저장 시도: {novel_dir}")
                     if file_handler.save_novel_settings(novel_dir, new_novel_data):
                         print("CORE: 요약 포함된 소설 설정 저장 완료.")
+                        # Update internal state and GUI widget
                         self.current_novel_settings[novel_key] = final_novel_setting
                         if self.gui_manager.settings_panel:
                             self.gui_manager.settings_panel.set_novel_settings(final_novel_setting)
+                            # Reset modified flag *after* successful save and GUI update
                             self.novel_settings_modified_flag = False
                             self.gui_manager.settings_panel.reset_novel_modified_flag()
 
@@ -2138,7 +2261,7 @@ class AppCore:
              print("CORE ERROR: 요약 생성 실패 (결과 없음).")
              self.update_status_bar_conditional("⚠️ 이전 줄거리 요약 실패 (결과 없음).")
 
-        self.update_ui_state()
+        self.update_ui_state() # Update UI state at the end
 
     def _run_capture_in_thread(self, capture_function, capture_args):
         """백그라운드 스레드: 이미지 캡처 실행 (함수와 인자를 받음)"""
@@ -2170,22 +2293,25 @@ class AppCore:
         self.is_capturing = False
         self.stop_timer()
 
-        if self.gui_manager:
-            if success:
-                status_msg = "✅ 내용 이미지 저장 완료."
-                self.update_status_bar(status_msg)
-                self.gui_manager.schedule_status_clear(status_msg, 3000)
-            else:
-                status_msg = "⚠️ 내용 이미지 저장 실패 또는 취소됨."
-                detailed_msg = f"내용을 이미지 파일로 저장하는 데 실패했습니다.\n({error_message or '알 수 없는 오류'})"
-                print(f"CORE ERROR: {detailed_msg}")
-                self.update_status_bar(status_msg)
-                self.gui_manager.show_message("error", "저장 실패", detailed_msg)
-                self.gui_manager.schedule_status_clear(status_msg, 5000)
+        # Ensure GUI Manager and Root exist before proceeding
+        if not self.gui_manager or not self.gui_manager.root or not self.gui_manager.root.winfo_exists():
+            print("CORE WARN: 이미지 캡처 결과 처리 실패 - GUI 없음 또는 파괴됨.")
+            self.update_ui_state() # Update state even if GUI gone
+            return
 
-            self.update_ui_state()
+        if success:
+            status_msg = "✅ 내용 이미지 저장 완료."
+            self.update_status_bar(status_msg)
+            self.gui_manager.schedule_status_clear(status_msg, 3000)
         else:
-            print("CORE WARN: 이미지 캡처 결과 처리 실패 - GUI Manager 없음.")
+            status_msg = "⚠️ 내용 이미지 저장 실패 또는 취소됨."
+            detailed_msg = f"내용을 이미지 파일로 저장하는 데 실패했습니다.\n({error_message or '알 수 없는 오류'})"
+            print(f"CORE ERROR: {detailed_msg}")
+            self.update_status_bar(status_msg)
+            self.gui_manager.show_message("error", "저장 실패", detailed_msg)
+            self.gui_manager.schedule_status_clear(status_msg, 5000)
+
+        self.update_ui_state() # Update UI state at the end
 
         print("CORE: 이미지 캡처 결과 처리 완료.")
 
@@ -2246,6 +2372,7 @@ class AppCore:
     def _trigger_chapter_settings_modified_in_gui(self):
         """GUI SettingsPanel의 장면 스냅샷 수정 플래그 설정 요청"""
         if self.gui_manager and self.gui_manager.settings_panel:
+             # SettingsPanel 내부에 플래그 설정 로직 호출
              self.gui_manager.settings_panel._trigger_chapter_settings_modified()
         else:
              print("CORE WARN: GUI SettingsPanel 없음. 수정 플래그 설정 불가.")
@@ -2255,9 +2382,10 @@ class AppCore:
         if self.gui_manager and self.gui_manager.status_label_widget and self.gui_manager.status_label_widget.winfo_exists():
             try:
                 current_text = self.gui_manager.get_status_bar_text()
+                # Check if the current status bar text contains any of the critical prefixes
                 if not any(prefix in current_text for prefix in ["✅", "❌", "⚠️", "⏳", "🔄", "✨", "📄", "🗑️", "🖼️"]):
                     self.gui_manager.update_status_bar(message)
-            except tk.TclError: pass
+            except tk.TclError: pass # Ignore if widget is destroyed
 
     def _validate_and_update_models_after_reconfig(self):
         """Helper to re-validate selected/summary models after API keys/config change."""
@@ -2274,13 +2402,16 @@ class AppCore:
                      break
              if not found_valid:
                   print("CORE ERROR: 재설정 후 사용 가능한 API가 없습니다!")
-                  self.current_api_type = constants.API_TYPE_GEMINI
+                  self.current_api_type = constants.API_TYPE_GEMINI # Fallback
                   self.available_models = []
              else:
                   print(f"CORE INFO: 새 활성 API 타입으로 전환됨: {self.current_api_type}")
-             self.selected_model = None
+             self.selected_model = None # Reset model as API changed
 
+        # Re-validate selected_model for the (potentially new) current_api_type
         current_models = self.available_models_by_type.get(self.current_api_type, [])
+        self.available_models = current_models # Update self.available_models
+
         if not self.selected_model or self.selected_model not in current_models:
              old_model = self.selected_model
              if current_models:
@@ -2292,34 +2423,58 @@ class AppCore:
                  if default_model and default_model in current_models:
                      self.selected_model = default_model
                  else:
-                     self.selected_model = current_models[0]
+                     self.selected_model = current_models[0] # Fallback to first available
                  print(f"CORE INFO: API 재설정 후 창작 모델 변경됨: {old_model} -> {self.selected_model}")
              else:
                   self.selected_model = None
                   print(f"CORE WARN: API 재설정 후 현재 API 타입 '{self.current_api_type}'에 모델 없음.")
 
+        # Re-validate summary models for *all* API types based on the new available_models_by_type
         print("CORE DEBUG: Re-validating summary models...")
         for api_type in constants.SUPPORTED_API_TYPES:
              api_models = self.available_models_by_type.get(api_type, [])
              current_summary = self.summary_models.get(api_type)
-             if not api_models:
+
+             if not api_models: # No models available for this API type anymore
                   if current_summary is not None:
                        print(f"CORE INFO: ({api_type.capitalize()}) 모델 목록 비어있음. 요약 모델 비활성화.")
                        self.summary_models[api_type] = None
-             elif current_summary is None or current_summary not in api_models:
+             elif current_summary is None or current_summary not in api_models: # Summary model needs update
                   old_summary = current_summary
+                  new_summary_model = None
+                  # Try default summary model for this type first
                   default_summary = None
                   if api_type == constants.API_TYPE_GEMINI: default_summary = constants.DEFAULT_SUMMARY_MODEL_GEMINI
                   elif api_type == constants.API_TYPE_CLAUDE: default_summary = constants.DEFAULT_SUMMARY_MODEL_CLAUDE
                   elif api_type == constants.API_TYPE_GPT: default_summary = constants.DEFAULT_SUMMARY_MODEL_GPT
 
                   if default_summary and default_summary in api_models:
-                       self.summary_models[api_type] = default_summary
+                       new_summary_model = default_summary
                   else:
-                       self.summary_models[api_type] = api_models[0]
-                  print(f"CORE INFO: ({api_type.capitalize()}) 요약 모델 변경됨: {old_summary} -> {self.summary_models[api_type]}")
+                       new_summary_model = api_models[0] # Fallback to first available
 
+                  if new_summary_model != old_summary:
+                       self.summary_models[api_type] = new_summary_model
+                       print(f"CORE INFO: ({api_type.capitalize()}) 요약 모델 변경됨: {old_summary} -> {self.summary_models[api_type]}")
+                  else:
+                       # Even if the model name is the same, assign it if it was None before
+                       self.summary_models[api_type] = new_summary_model
+                       if old_summary is None:
+                            print(f"CORE INFO: ({api_type.capitalize()}) 요약 모델 설정됨: {self.summary_models[api_type]}")
+
+
+        # Update the currently active summary model based on the current_api_type
         self.summary_model = self.summary_models.get(self.current_api_type)
-        print(f"CORE INFO: 활성 요약 모델 업데이트됨 -> {self.summary_model}")
+        print(f"CORE INFO: 활성 요약 모델 업데이트됨 -> {self.summary_model} (for {self.current_api_type})")
+
+        # Save updated API type and model to config
+        self.config[constants.CONFIG_API_TYPE_KEY] = self.current_api_type
+        self.config[constants.CONFIG_MODEL_KEY] = self.selected_model
+        # Also save potentially updated summary models
+        for api_t, model_n in self.summary_models.items():
+             config_key = f"{constants.SUMMARY_MODEL_KEY_PREFIX}{api_t}"
+             self.config[config_key] = model_n
+        file_handler.save_config(self.config)
+
 
 # --- END OF FILE app_core.py ---
