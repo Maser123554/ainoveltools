@@ -1,21 +1,19 @@
 # requirements.txt
 
 # --- Core API Libraries ---
-google-generativeai  # For Gemini API access
-anthropic            # For Claude API access
-openai               # For OpenAI (GPT) API access
+google-generativeai>=0.5.0    # Specify a minimum version if needed, helps avoid breaking changes
+anthropic>=0.20.0           # Specify a minimum version
+openai>=1.0.0               # Specify a minimum version (v1 introduced breaking changes)
 
 # --- Environment Variable Management ---
-python-dotenv        # For loading API keys and settings from .env file
+python-dotenv>=1.0.0         # For loading API keys and settings from .env file
 
-# --- Nuitka Recommended/Helper Libraries ---
-# These are often beneficial or required for Nuitka compilation
-ordered-set          # Used internally by Nuitka
-zstandard            # Used by Nuitka for compression/performance
+# --- Image Handling ---
+Pillow>=9.0.0               # Used for icons (.ico) and the image rendering feature (.png)
 
-# --- Image Handling (for Tkinter icon/potential future use) ---
-Pillow               # Useful for image handling in Tkinter, especially cross-platform or non-standard formats
-
-# --- Other Notes ---
-# - tkinter: Is part of the Python standard library and should NOT be listed here.
-# - os, sys, json, re, traceback, threading, time, copy, shutil, platform: Are standard library modules.
+# --- Nuitka Compilation Helpers (Optional but Recommended) ---
+# ordered-set               # Often used internally by Nuitka or its dependencies.
+# zstandard                 # Can be used by Nuitka for compression/performance.
+# Note: Nuitka might pull these in automatically during standalone compilation.
+# Uncomment and install (`pip install ordered-set zstandard`) ONLY if Nuitka
+# specifically asks for them during compilation or if you encounter related errors.

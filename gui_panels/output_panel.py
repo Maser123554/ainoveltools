@@ -50,27 +50,35 @@ class OutputPanel(ttk.Frame):
         # 하단 정보 프레임 (버튼, 토큰, 글자수)
         bottom_info = ttk.Frame(output_frame)
         bottom_info.grid(row=1, column=0, sticky="ew", pady=(constants.PAD_Y, 0))
-        bottom_info.columnconfigure(2, weight=1) # 확장 공백
+        # *** 수정: columnconfigure 변경 (버튼 추가로 인한 인덱스 변경) ***
+        bottom_info.columnconfigure(3, weight=1) # 확장 공백 (기존 2에서 3으로 변경)
 
         # 버튼
         save_btn = ttk.Button(bottom_info, text="💾 변경 저장", command=self.app_core.handle_save_changes_request, state=tk.DISABLED)
         save_btn.grid(row=0, column=0, padx=(0, constants.PAD_X // 2))
         copy_btn = ttk.Button(bottom_info, text="📋 본문 복사", command=self.app_core.handle_copy_request, state=tk.DISABLED)
-        copy_btn.grid(row=0, column=1, padx=(0, constants.PAD_X))
+        copy_btn.grid(row=0, column=1, padx=(0, constants.PAD_X // 2)) # 간격 조정
+
+        # *** 추가: '이미지로 저장' 버튼 ***
+        capture_btn = ttk.Button(bottom_info, text="🖼️ 이미지로 저장", command=self.app_core.handle_capture_output_as_png, state=tk.DISABLED)
+        capture_btn.grid(row=0, column=2, padx=(0, constants.PAD_X)) # 버튼 추가 및 간격 조정 (column 2에 추가)
+        self.widgets['capture_button'] = capture_btn # 위젯 딕셔너리에 추가
+        # *** --- ***
+
         self.widgets['save_button'] = save_btn
         self.widgets['copy_button'] = copy_btn
 
-        # 토큰 라벨
+        # 토큰 라벨 (Grid column 인덱스 변경)
         token_in_lbl = ttk.Label(bottom_info, text="입력: ---", style='Token.TLabel', anchor='e')
-        token_in_lbl.grid(row=0, column=3, sticky='e', padx=(0, constants.PAD_X // 2))
+        token_in_lbl.grid(row=0, column=4, sticky='e', padx=(0, constants.PAD_X // 2)) # 인덱스 변경 (3 -> 4)
         token_out_lbl = ttk.Label(bottom_info, text="출력: ---", style='Token.TLabel', anchor='e')
-        token_out_lbl.grid(row=0, column=4, sticky='e', padx=(0, constants.PAD_X // 2))
+        token_out_lbl.grid(row=0, column=5, sticky='e', padx=(0, constants.PAD_X // 2)) # 인덱스 변경 (4 -> 5)
         self.widgets['token_input_label'] = token_in_lbl
         self.widgets['token_output_label'] = token_out_lbl
 
-        # 글자수 라벨
+        # 글자수 라벨 (Grid column 인덱스 변경)
         char_lbl = ttk.Label(bottom_info, text="글자 수: 0", style='Status.TLabel', anchor='e')
-        char_lbl.grid(row=0, column=5, sticky='e', padx=(constants.PAD_X // 2, 0))
+        char_lbl.grid(row=0, column=6, sticky='e', padx=(constants.PAD_X // 2, 0)) # 인덱스 변경 (5 -> 6)
         self.widgets['char_count_label'] = char_lbl
 
     def _on_output_modified(self, event=None):
@@ -193,6 +201,15 @@ class OutputPanel(ttk.Frame):
             # Copy is possible if not busy and there is content (regardless of scene loaded)
             can_copy = not is_busy and has_content
             copy_btn.config(state=tk.NORMAL if can_copy else tk.DISABLED)
+
+        # *** 추가: 이미지 캡처 버튼 상태 업데이트 ***
+        capture_btn = self.widgets.get('capture_button')
+        if capture_btn and capture_btn.winfo_exists():
+            has_content = bool(self.get_content())
+            # 캡처는 바쁘지 않고 내용이 있을 때 가능 (씬 로드 여부는 상관 없음)
+            can_capture = not is_busy and has_content
+            capture_btn.config(state=tk.NORMAL if can_capture else tk.DISABLED)
+        # *** --- ***
 
         # Text widget editability
         output_widget = self.widgets.get('output_text')
