@@ -1,3 +1,5 @@
+# --- START OF FILE gui_manager.py ---
+
 # gui_manager.py
 import tkinter as tk
 from tkinter import ttk, messagebox
@@ -87,10 +89,13 @@ class GuiManager:
         settings_menu = tk.Menu(menubar, tearoff=0)
         menubar.add_cascade(label="⚙️ 설정", menu=settings_menu)
         # 메뉴 항목 클릭 시 AppCore의 핸들러 호출
-        settings_menu.add_command(label="API 키 관리...", command=self.app_core.handle_api_key_dialog) # *** MODIFIED: ADDED ***
-        settings_menu.add_separator() # *** MODIFIED: ADDED ***
+        settings_menu.add_command(label="API 키 관리...", command=self.app_core.handle_api_key_dialog)
+        settings_menu.add_separator()
         settings_menu.add_command(label="기본 시스템 프롬프트 설정...", command=self.app_core.handle_system_prompt_dialog)
         settings_menu.add_command(label="출력 영역 색상 설정...", command=self.app_core.handle_color_dialog)
+        # --- 추가 ---
+        settings_menu.add_command(label="이미지 캡처 폰트 설정...", command=self.app_core.handle_render_font_dialog)
+        # --- ---
         settings_menu.add_separator()
         settings_menu.add_command(label="요약 모델 설정...", command=self.app_core.handle_summary_model_dialog)
         settings_menu.add_separator()
@@ -135,22 +140,17 @@ class GuiManager:
     def _clear_status_if_equals(self, expected_message):
         """예약된 상태 표시줄 클리어 실행"""
         try:
-            # Ensure AppCore reference exists before accessing its attributes
             if not hasattr(self, 'app_core') or self.app_core is None:
                 print("GUI WARN: _clear_status_if_equals - AppCore not available.")
                 return
 
             if self.status_label_widget and self.status_label_widget.winfo_exists():
-                # 현재 상태 메시지가 지우기로 예약된 메시지와 일치하는 경우에만 처리
                 if self.get_status_bar_text() == expected_message:
-                    # 기본 상태 메시지 결정 로직 (is_busy() 호출 제거)
-                    default_status = "상태 메시지 초기화됨." # 기본값
-                    # Use self.app_core consistently
+                    default_status = "상태 메시지 초기화됨."
                     if self.app_core.current_scene_path:
                         scene_num = self.app_core._get_scene_number_from_path(self.app_core.current_scene_path)
                         current_chapter_path = os.path.dirname(self.app_core.current_scene_path) if self.app_core.current_scene_path else None
                         ch_str = self.app_core._get_chapter_number_str_from_folder(current_chapter_path) if current_chapter_path else "?"
-                        # Check if novel name exists
                         novel_name = self.app_core.current_novel_name if self.app_core.current_novel_name else "소설"
                         default_status = f"[{novel_name}] {ch_str} - {scene_num:03d} 장면 로드됨."
                     elif self.app_core.current_chapter_arc_dir:
@@ -163,9 +163,8 @@ class GuiManager:
                     else:
                         default_status = "새 소설을 시작하거나 기존 항목을 선택하세요."
 
-                    # 결정된 기본 상태 메시지로 업데이트
                     self.update_status_bar(default_status)
-        except tk.TclError: pass # 위젯 파괴 시 무시
+        except tk.TclError: pass
         except Exception as e: print(f"GUI WARN: 상태 클리어 중 오류: {e}")
 
 
@@ -176,26 +175,19 @@ class GuiManager:
         """
         print(f"GUI: UI 상태 업데이트 요청: Busy={is_busy}, Novel={novel_loaded}, Chapter={chapter_loaded}, Scene={scene_loaded}")
 
-        # SettingsPanel에는 모든 상태 전달
         if self.settings_panel:
             self.settings_panel.update_ui_state(is_busy, novel_loaded, chapter_loaded, scene_loaded)
 
-        # OutputPanel에는 is_busy, scene_loaded 및 output_modified 상태 전달
         if self.output_panel:
-            # OutputPanel은 AppCore에서 직접 output_modified 상태를 가져올 수 있음
             output_mod = self.app_core.output_text_modified
             self.output_panel.update_ui_state(is_busy, scene_loaded, output_mod)
 
-        # TreeviewPanel에는 is_busy만 전달 (트리뷰 자체는 항상 활성)
         if self.treeview_panel:
             self.treeview_panel.update_ui_state(is_busy)
 
-        # 저장 버튼 활성화 로직은 각 패널(주로 OutputPanel) 내부 또는 AppCore에서 관리됨.
-        # GuiManager는 상태만 전달하고 각 패널이 그에 맞게 버튼 상태를 조정.
-
     def show_message(self, msg_type, title, message):
         """메시지 박스 표시 래퍼"""
-        if self.root and self.root.winfo_exists(): # 루트 윈도우가 있을 때만
+        if self.root and self.root.winfo_exists():
             if msg_type == "info":
                 messagebox.showinfo(title, message, parent=self.root)
             elif msg_type == "warning":
@@ -203,17 +195,18 @@ class GuiManager:
             elif msg_type == "error":
                 messagebox.showerror(title, message, parent=self.root)
             else:
-                messagebox.showinfo(title, message, parent=self.root) # 기본값
+                messagebox.showinfo(title, message, parent=self.root)
 
     def ask_yes_no(self, title, message, icon='question'):
         """Yes/No 질문 메시지 박스"""
         if self.root and self.root.winfo_exists():
              return messagebox.askyesno(title, message, icon=icon, parent=self.root)
-        return False # GUI 없으면 False 반환
+        return False
 
     def ask_yes_no_cancel(self, title, message, icon='question'):
         """Yes/No/Cancel 질문 메시지 박스"""
         if self.root and self.root.winfo_exists():
-            # askyesnocancel 반환값: True(Yes), False(No), None(Cancel)
             return messagebox.askyesnocancel(title, message, icon=icon, parent=self.root)
-        return None # GUI 없으면 None 반환
+        return None
+
+# --- END OF FILE gui_manager.py ---

@@ -1,20 +1,22 @@
 # app_core.py
 import os
 import sys
-import threading
+import threading # 스레딩 추가
 import time
 import traceback
 import copy
 import shutil
 import re
+import tkinter as tk # tk 사용 추가
 import tkinter.messagebox as messagebox
-import tkinter as tk
 
 # 프로젝트 모듈 임포트
 import constants
 import file_handler
 import api_handler # 이제 여러 API 함수 포함
 import gui_dialogs
+# image_utils는 이제 직접 렌더링과 스크롤캡처 모두 포함 가능. 어떤 방식을 쓸지는 AppCore 결정
+import image_utils
 
 class AppCore:
     """애플리케이션 핵심 로직, 상태 관리, 백엔드 연동 클래스"""
@@ -28,6 +30,10 @@ class AppCore:
         self.system_prompt = self.config.get('system_prompt', constants.DEFAULT_SYSTEM_PROMPT)
         self.output_bg = self.config.get('output_bg_color', constants.DEFAULT_OUTPUT_BG)
         self.output_fg = self.config.get('output_fg_color', constants.DEFAULT_OUTPUT_FG)
+        # --- 추가: 렌더링 폰트 경로 상태 ---
+        self.render_font_path = self.config.get(constants.CONFIG_RENDER_FONT_PATH, "")
+        print(f"CORE INFO: 초기 로드된 렌더링 폰트 경로: '{self.render_font_path}'")
+        # --- ---
 
         # === API 및 모델 관리 (다중 API 지원) ===
         if available_models_by_type is None or not isinstance(available_models_by_type, dict):
@@ -121,24 +127,18 @@ class AppCore:
         self.output_text_modified = False      # OutputPanel 내용 수정 여부
         self.novel_settings_modified_flag = False # Novel Settings 텍스트 수정 여부 (novel_settings.json 저장 대상)
         self.arc_settings_modified_flag = False # Chapter Arc Notes 텍스트 수정 여부 (chapter_settings.json 저장 대상)
-        # SettingsPanel의 chapter_settings_modified_flag는 장면 스냅샷(옵션, 플롯 등) 변경 여부를 나타냄
-
         self._novel_settings_after_id = None
         self._arc_settings_after_id = None
 
         self.is_generating = False # 생성 중 플래그
         self.is_summarizing = False # 요약 중 플래그
+        self.is_capturing = False # 이미지 캡처 중 플래그
         self.start_time = 0
         self.timer_after_id = None
 
         # 재생성 컨텍스트
         self.last_generation_settings_snapshot = None
         self.last_generation_previous_content = None
-
-        try:
-            print(f"CORE: AppCore __init__ 완료. 객체 ID: {id(self)}")
-        except Exception as e:
-            print(f"CORE: Error printing self ID in __init__: {e}")
 
         print("CORE: AppCore 초기화 완료.")
 
@@ -195,7 +195,6 @@ class AppCore:
 
         self.update_window_title()
         self.update_ui_state()
-        # SettingsPanel 업데이트는 GUI의 _on_api_type_selected -> _update_models_for_api_type 에서 처리
 
 
     def handle_model_change(self, new_model):
@@ -209,9 +208,8 @@ class AppCore:
             if not file_handler.save_config(self.config):
                  self.gui_manager.show_message("warning", "저장 경고", "창작 모델 설정을 config.json에 저장 실패.")
             self.update_window_title()
-            # 모델 변경도 장면 스냅샷 저장 대상 변경으로 간주 (현재 장면에 스냅샷 저장 필요)
             if self.current_scene_path:
-                 self._trigger_chapter_settings_modified_in_gui() # GUI 통해 스냅샷 플래그 설정 요청
+                 self._trigger_chapter_settings_modified_in_gui()
         elif new_model is None:
              print(f"CORE: 창작 모델 없음으로 설정됨.")
              self.selected_model = None
@@ -254,10 +252,11 @@ class AppCore:
          if self.gui_manager:
             is_gen = generating if generating is not None else self.is_generating
             is_sum = self.is_summarizing
+            is_cap = self.is_capturing
             is_novel = novel_loaded if novel_loaded is not None else bool(self.current_novel_dir)
             is_chap = chapter_loaded if chapter_loaded is not None else bool(self.current_chapter_arc_dir)
             is_scene = scene_loaded if scene_loaded is not None else bool(self.current_scene_path)
-            is_busy = is_gen or is_sum
+            is_busy = is_gen or is_sum or is_cap
 
             self.gui_manager.set_ui_state(is_busy, is_novel, is_chap, is_scene)
 
@@ -277,8 +276,7 @@ class AppCore:
         if self.gui_manager and self.gui_manager.settings_panel:
             self.gui_manager.settings_panel.clear_chapter_arc_notes_field()
             self.gui_manager.settings_panel.clear_scene_settings_fields()
-        self.arc_settings_modified_flag = False # 아크 노트 플래그 리셋
-        # SettingsPanel의 chapter_settings_modified_flag(스냅샷용)는 clear_scene_settings_fields에서 리셋됨
+        self.arc_settings_modified_flag = False
         if self._arc_settings_after_id and self.gui_manager and self.gui_manager.root:
             try: self.gui_manager.root.after_cancel(self._arc_settings_after_id)
             except Exception: pass
@@ -295,40 +293,22 @@ class AppCore:
             self._novel_settings_after_id = None
 
     def populate_settings_panel(self, novel_settings=None, chapter_arc_settings=None, scene_settings=None):
+        """설정 패널 위젯 채우기 (로드 시 호출, 수정 플래그 리셋 포함 안함 - handle_tree_load_request에서 처리)"""
         if self.gui_manager and self.gui_manager.settings_panel:
             self.gui_manager.settings_panel.populate_widgets(
                 novel_settings if novel_settings is not None else {},
                 chapter_arc_settings if chapter_arc_settings is not None else {},
                 scene_settings if scene_settings is not None else {}
             )
-        # Update AppCore's internal state copies
         if novel_settings is not None: self.current_novel_settings = novel_settings.copy()
         if chapter_arc_settings is not None: self.current_loaded_chapter_arc_settings = chapter_arc_settings.copy()
         if scene_settings is not None: self.current_loaded_scene_settings = scene_settings.copy()
 
-        # Reset modification flags after populating
-        self.novel_settings_modified_flag = False
-        self.arc_settings_modified_flag = False
-        self.output_text_modified = False
-        if self.gui_manager and self.gui_manager.settings_panel:
-             self.gui_manager.settings_panel.reset_novel_modified_flag() # Resets Tk flag
-             # Reset Arc Notes Tk flag explicitly
-             arc_widget = self.gui_manager.settings_panel.widgets.get('chapter_arc_notes_text')
-             if arc_widget: arc_widget.edit_modified(False)
-             self.gui_manager.settings_panel.reset_chapter_modified_flag() # Resets snapshot flag & Tk plot flag
-        if self.gui_manager and self.gui_manager.output_panel:
-             self.gui_manager.output_panel.reset_modified_flag() # Resets Tk flag
-        # UI 상태 업데이트 필요
-        self.update_ui_state()
-
     def display_output_content(self, text, token_info=None):
+        """출력 패널 내용 표시 (로드 시 호출, 수정 플래그 리셋 포함 안함 - handle_tree_load_request에서 처리)"""
         if self.gui_manager and self.gui_manager.output_panel:
             self.gui_manager.output_panel.display_content(text)
             self.gui_manager.output_panel.update_token_display(token_info)
-        self.output_text_modified = False
-        if self.gui_manager and self.gui_manager.output_panel:
-            self.gui_manager.output_panel.reset_modified_flag()
-        self.update_ui_state()
 
     def refresh_treeview_data(self):
         if self.gui_manager and self.gui_manager.treeview_panel:
@@ -377,7 +357,7 @@ class AppCore:
              return
 
         initial_novel_settings = {novel_setting_key: initial_settings_text}
-        self.clear_all_ui_state() # UI 초기화
+        self.clear_all_ui_state()
 
         try:
             os.makedirs(novel_dir)
@@ -388,12 +368,11 @@ class AppCore:
 
         if not file_handler.save_novel_settings(novel_dir, initial_novel_settings):
             self.gui_manager.show_message("error", "설정 저장 오류", "초기 소설 설정 저장에 실패했습니다.")
-            try: shutil.rmtree(novel_dir) # 생성된 폴더 정리 시도
+            try: shutil.rmtree(novel_dir)
             except Exception as rm_err: print(f"CORE WARN: 폴더 정리 실패: {rm_err}")
-            self.clear_all_ui_state() # 실패 시 UI 완전 초기화
+            self.clear_all_ui_state()
             return
 
-        # 상태 업데이트
         self.current_novel_name = novel_name
         self.current_novel_dir = novel_dir
         self.current_novel_settings = initial_novel_settings.copy()
@@ -403,6 +382,19 @@ class AppCore:
         self.refresh_treeview_data()
         self.select_treeview_item(novel_name)
         self.populate_settings_panel(initial_novel_settings, None, None)
+
+        print("CORE DEBUG: 새 소설 생성 후 수정 플래그 강제 리셋 시도.")
+        self.output_text_modified = False
+        self.novel_settings_modified_flag = False
+        self.arc_settings_modified_flag = False
+        if self.gui_manager:
+            if self.gui_manager.output_panel: self.gui_manager.output_panel.reset_modified_flag()
+            if self.gui_manager.settings_panel:
+                self.gui_manager.settings_panel.reset_novel_modified_flag()
+                arc_widget = self.gui_manager.settings_panel.widgets.get('chapter_arc_notes_text')
+                if arc_widget and arc_widget.winfo_exists(): arc_widget.edit_modified(False)
+                self.gui_manager.settings_panel.reset_chapter_modified_flag()
+
         self.update_window_title()
         self.update_ui_status_and_state(f"✨ 새 소설 '{novel_name}' 생성됨. '새 챕터 폴더'로 시작하세요.",
                                         generating=False, novel_loaded=True, chapter_loaded=False, scene_loaded=False)
@@ -463,6 +455,19 @@ class AppCore:
         self.refresh_treeview_data()
         self.select_treeview_item(new_chapter_arc_dir)
         self.populate_settings_panel(self.current_novel_settings, initial_arc_settings, None)
+
+        print("CORE DEBUG: 새 챕터 생성 후 수정 플래그 강제 리셋 시도.")
+        self.output_text_modified = False
+        self.novel_settings_modified_flag = False
+        self.arc_settings_modified_flag = False
+        if self.gui_manager:
+            if self.gui_manager.output_panel: self.gui_manager.output_panel.reset_modified_flag()
+            if self.gui_manager.settings_panel:
+                self.gui_manager.settings_panel.reset_novel_modified_flag()
+                arc_widget = self.gui_manager.settings_panel.widgets.get('chapter_arc_notes_text')
+                if arc_widget and arc_widget.winfo_exists(): arc_widget.edit_modified(False)
+                self.gui_manager.settings_panel.reset_chapter_modified_flag()
+
         self.update_window_title()
         ch_str = self._get_chapter_number_str_from_folder(new_chapter_arc_dir)
         self.update_ui_status_and_state(f"📁 [{self.current_novel_name}] {ch_str} 폴더 생성됨. '새 장면'으로 1장면 생성을 시작하세요.",
@@ -507,9 +512,8 @@ class AppCore:
 
         novel_settings_for_gen = self.current_novel_settings
         arc_notes_for_gen = self.current_loaded_chapter_arc_settings
-        # 새 장면이므로 GUI에서 플롯 제외한 옵션만 가져옴 (플롯은 dialog에서 받음)
         gui_scene_gen_settings = self._get_settings_from_gui(read_novel_settings=False, read_chapter_arc_settings=False, read_scene_settings=True)
-        gui_scene_gen_settings[constants.SCENE_PLOT_KEY] = scene_plot_from_dialog # Dialog 플롯 사용
+        gui_scene_gen_settings[constants.SCENE_PLOT_KEY] = scene_plot_from_dialog
 
         self._start_generation_thread_internal(
             api_type=self.current_api_type,
@@ -543,7 +547,6 @@ class AppCore:
              self.gui_manager.show_message("error", "모델 오류", f"현재 API 타입({self.current_api_type.capitalize()})에 사용할 창작 모델이 선택되지 않았습니다.")
              return
 
-        # 재생성 시 플롯은 현재 로드된 값 또는 GUI 값 중 하나를 기본값으로 사용
         current_gui_plot = self.gui_manager.settings_panel.get_scene_plot() if self.gui_manager.settings_panel else ""
         loaded_plot = self.current_loaded_scene_settings.get(constants.SCENE_PLOT_KEY, "")
         initial_plot_for_dialog = loaded_plot if loaded_plot else current_gui_plot
@@ -563,9 +566,8 @@ class AppCore:
 
         novel_settings = self.current_novel_settings
         arc_notes = self.current_loaded_chapter_arc_settings
-        # 재생성이므로 GUI에서 플롯 제외한 옵션만 가져옴 (플롯은 dialog에서 받음)
         gui_scene_gen_settings = self._get_settings_from_gui(read_novel_settings=False, read_chapter_arc_settings=False, read_scene_settings=True)
-        gui_scene_gen_settings[constants.SCENE_PLOT_KEY] = scene_plot_from_dialog # Dialog 플롯 사용
+        gui_scene_gen_settings[constants.SCENE_PLOT_KEY] = scene_plot_from_dialog
 
         self._start_generation_thread_internal(
             api_type=self.current_api_type,
@@ -578,45 +580,93 @@ class AppCore:
             is_new_scene=False
         )
 
+    def handle_capture_output_as_png(self):
+        """'이미지로 저장' 버튼/메뉴 클릭 처리"""
+        print("CORE: 내용 이미지 캡처 요청 처리 시작...")
+        if self.check_busy_and_warn(): return
+
+        if not self.gui_manager or not self.gui_manager.output_panel:
+            print("CORE ERROR: OutputPanel을 찾을 수 없습니다.")
+            self.update_status_bar("⚠️ 이미지 캡처 실패 (내부 오류)")
+            return
+
+        text_widget = self.gui_manager.output_panel.widgets.get('output_text')
+        root_window = self.gui_manager.root
+
+        if not text_widget or not text_widget.winfo_exists():
+            print("CORE ERROR: 텍스트 위젯을 찾을 수 없습니다.")
+            self.update_status_bar("⚠️ 이미지 캡처 실패 (텍스트 위젯 없음)")
+            return
+        if not root_window or not root_window.winfo_exists():
+            print("CORE ERROR: 루트 윈도우를 찾을 수 없습니다.")
+            self.update_status_bar("⚠️ 이미지 캡처 실패 (윈도우 없음)")
+            return
+
+        content = self.gui_manager.output_panel.get_content()
+        if not content or not content.strip():
+            self.update_status_bar("⚠️ 이미지로 저장할 내용이 없습니다.")
+            if self.gui_manager: self.gui_manager.schedule_status_clear("⚠️ 이미지로 저장할 내용이 없습니다.", 2000)
+            return
+
+        # Check if the direct rendering function exists in image_utils
+        # If not, fall back to the scroll capture method
+        capture_function = None
+        if hasattr(image_utils, 'render_text_widget_to_image'):
+            capture_function = image_utils.render_text_widget_to_image
+            capture_type = "Direct Rendering"
+            capture_args = (text_widget, root_window, self.render_font_path) # Include font path
+        elif hasattr(image_utils, 'capture_scrolled_text_as_png'):
+            capture_function = image_utils.capture_scrolled_text_as_png
+            capture_type = "Scroll Capture"
+            capture_args = (text_widget, root_window) # No font path needed
+        else:
+             print("CORE ERROR: 사용할 수 있는 이미지 캡처 함수를 찾을 수 없습니다.")
+             self.update_status_bar("⚠️ 이미지 캡처 실패 (캡처 함수 없음)")
+             return
+
+        print(f"CORE INFO: Using {capture_type} method for image capture.")
+        self.is_capturing = True
+        self.update_ui_state()
+        self.start_timer("🖼️ 내용 이미지 캡처 중...")
+
+        # Start capture in a thread using the determined function and arguments
+        thread = threading.Thread(
+            target=self._run_capture_in_thread,
+            args=(capture_function, capture_args), # Pass function and its args
+            daemon=True
+        )
+        thread.start()
+
     def handle_save_changes_request(self):
         """'변경 저장' 버튼 클릭 처리"""
         print("CORE: 변경 저장 요청 처리 시작...")
         if self.check_busy_and_warn(): return
 
-        # 각 저장 대상별 플래그 확인
         unsaved_output = self.output_text_modified
         unsaved_novel = self.novel_settings_modified_flag
-        unsaved_arc = self.arc_settings_modified_flag # 아크 노트 자체 변경 플래그
-        # 장면 스냅샷 변경 플래그 (플롯, 옵션, 모델)
+        unsaved_arc = self.arc_settings_modified_flag
         unsaved_scene_snapshot = self.gui_manager.settings_panel.chapter_settings_modified_flag if self.gui_manager.settings_panel else False
 
         if not unsaved_output and not unsaved_novel and not unsaved_arc and not unsaved_scene_snapshot:
             print("CORE INFO: 저장할 변경 사항 없음.")
             self.update_status_bar("저장할 변경 사항이 없습니다.")
-            self.update_ui_state() # 버튼 비활성화
+            self.update_ui_state()
             return
 
         print(f"CORE: 변경 내용 저장 시도...")
         saved_something = False
         error_occurred = False
 
-        # 1. 소설 설정 저장 (novel_settings_modified_flag 확인)
         if unsaved_novel and self.current_novel_dir:
             print("CORE: 소설 설정 변경 감지됨. 저장 시도...")
-            if self._save_current_novel_settings(): # 이 함수 내부에서 플래그 리셋
-                 saved_something = True
-            else:
-                 error_occurred = True
+            if self._save_current_novel_settings(): saved_something = True
+            else: error_occurred = True
 
-        # 2. 챕터 아크 노트 저장 (arc_settings_modified_flag 확인)
         if not error_occurred and unsaved_arc and self.current_chapter_arc_dir:
              print("CORE: 챕터 아크 노트 변경 감지됨. 저장 시도...")
-             if self._save_current_chapter_arc_settings(): # 이 함수 내부에서 플래그 리셋
-                 saved_something = True
-             else:
-                 error_occurred = True
+             if self._save_current_chapter_arc_settings(): saved_something = True
+             else: error_occurred = True
 
-        # 3. 장면 내용 저장 (output_text_modified 확인)
         if not error_occurred and unsaved_output and self.current_scene_path:
             print(f"CORE: 장면 내용 변경 감지됨 ({os.path.basename(self.current_scene_path)}). 저장 시도...")
             output_content = self.gui_manager.output_panel.get_content() if self.gui_manager.output_panel else None
@@ -630,7 +680,7 @@ class AppCore:
                 if scene_num >= 0:
                     if file_handler.save_scene_content(chapter_dir, scene_num, output_content):
                         print("CORE: 장면 내용 저장 성공.")
-                        self.output_text_modified = False # 플래그 리셋
+                        self.output_text_modified = False
                         if self.gui_manager.output_panel: self.gui_manager.output_panel.reset_modified_flag()
                         saved_something = True
                     else:
@@ -640,29 +690,24 @@ class AppCore:
                     print(f"CORE ERROR: 장면 번호 가져오기 실패 ({self.current_scene_path}). 내용 저장 불가.")
                     error_occurred = True
 
-        # 4. 장면 설정 스냅샷 저장 (settings_panel.chapter_settings_modified_flag 확인)
         if not error_occurred and unsaved_scene_snapshot and self.current_scene_path:
             print(f"CORE: 장면 설정 스냅샷 변경 감지됨 ({os.path.basename(self.current_scene_path)}). 저장 시도...")
             scene_num = self._get_scene_number_from_path(self.current_scene_path)
             chapter_dir = os.path.dirname(self.current_scene_path)
             if scene_num >= 0:
                  try:
-                     # GUI에서 현재 스냅샷 대상 설정 가져오기 (플롯, 옵션, 모델)
                      settings_for_snapshot = self._get_settings_from_gui(
                          read_novel_settings=False, read_chapter_arc_settings=False, read_scene_settings=True
                      )
-                     # API 타입은 저장 안 함
                      if 'selected_api_type' in settings_for_snapshot: del settings_for_snapshot['selected_api_type']
-
-                     # 로드된 토큰 정보가 있으면 유지
                      token_info = self.current_loaded_scene_settings.get(constants.TOKEN_INFO_KEY, {constants.INPUT_TOKEN_KEY: 0, constants.OUTPUT_TOKEN_KEY: 0})
                      settings_for_snapshot[constants.TOKEN_INFO_KEY] = token_info
 
                      if file_handler.save_scene_settings(chapter_dir, scene_num, settings_for_snapshot):
                          print("CORE: 장면 설정 스냅샷 저장 성공.")
-                         self.current_loaded_scene_settings.update(settings_for_snapshot) # 로드된 상태 업데이트
+                         self.current_loaded_scene_settings.update(settings_for_snapshot)
                          if self.gui_manager.settings_panel:
-                             self.gui_manager.settings_panel.reset_chapter_modified_flag() # 스냅샷 플래그 리셋
+                             self.gui_manager.settings_panel.reset_chapter_modified_flag()
                          saved_something = True
                      else:
                          self.update_status_bar("⚠️ 장면 설정 스냅샷 저장 실패.")
@@ -676,7 +721,6 @@ class AppCore:
                  print(f"CORE ERROR: 장면 번호 가져오기 실패 ({self.current_scene_path}). 설정 저장 불가.")
                  error_occurred = True
 
-        # --- 최종 처리 ---
         if saved_something and not error_occurred:
              context_name = "[?]"
              if self.current_scene_path:
@@ -697,7 +741,6 @@ class AppCore:
         else:
              print("CORE WARN: 저장 요청 처리 완료, 저장된 항목 없음.")
 
-        # UI 상태 업데이트 (버튼 비활성화 등)
         self.update_ui_state()
 
     def handle_copy_request(self):
@@ -749,7 +792,8 @@ class AppCore:
 
         if not busy_now:
             current_status = self.gui_manager.get_status_bar_text() if self.gui_manager else ""
-            if not any(prefix in current_status for prefix in ["✅", "❌", "⚠️", "⏳", "🔄", "✨", "📄", "🗑️"]):
+            # Update status bar only if it doesn't contain critical prefixes
+            if not any(prefix in current_status for prefix in ["✅", "❌", "⚠️", "⏳", "🔄", "✨", "📄", "🗑️", "🖼️"]):
                 status_msg = ""
                 if is_scene and item_id:
                     scene_num = self._get_scene_number_from_path(item_id)
@@ -779,7 +823,6 @@ class AppCore:
                 if status_msg: self.update_status_bar(status_msg)
         else:
             print(f"DEBUG: handle_tree_selection - Skipping status bar update because AppCore is busy.")
-
 
     def handle_tree_load_request(self, item_id, tags):
         """트리뷰 아이템 더블클릭 (로드) 처리"""
@@ -820,46 +863,57 @@ class AppCore:
                 if not preserve_chapter: self.clear_chapter_arc_and_scene_fields()
                 if not preserve_novel: self.clear_settings_panel_novel_fields()
 
-                # Load Novel Settings
                 loaded_novel_settings = self.current_novel_settings if preserve_novel else file_handler.load_novel_settings(novel_dir)
                 if not preserve_novel:
                      self.current_novel_name = novel_name
                      self.current_novel_dir = novel_dir
                      print(f"CORE: 새 소설 설정 로드: {novel_name}")
 
-                # Load Chapter Arc Settings
                 loaded_chapter_arc_settings = self.current_loaded_chapter_arc_settings if preserve_chapter else file_handler.load_chapter_settings(chapter_dir)
                 if not preserve_chapter:
                      self.current_chapter_arc_dir = chapter_dir
                      print(f"CORE: 새 챕터 아크 설정 로드: {os.path.basename(chapter_dir)}")
 
-                # Load Scene Settings and Content
                 print(f"CORE: 장면 설정 및 내용 로드: {os.path.basename(scene_path)}")
                 loaded_scene_settings = file_handler.load_scene_settings(chapter_dir, scene_num)
                 scene_content = file_handler.load_scene_content(chapter_dir, scene_num)
 
-                # 모델 유효성 검사 및 조정
                 saved_model = loaded_scene_settings.get('selected_model')
+                model_name_to_use = self.selected_model
                 if saved_model and saved_model in self.available_models:
                     if saved_model != self.selected_model:
-                         print(f"CORE INFO: 로드된 장면 설정에서 모델 변경: {self.selected_model} -> {saved_model}")
-                         self.handle_model_change(saved_model) # AppCore 상태 업데이트 및 UI 트리거
+                        print(f"CORE INFO: 로드된 장면 설정에서 모델 변경 시도: {self.selected_model} -> {saved_model}")
+                        self.selected_model = saved_model
+                        self.config[constants.CONFIG_MODEL_KEY] = saved_model
+                        file_handler.save_config(self.config)
+                    model_name_to_use = saved_model
                 else:
                     print(f"CORE INFO: 로드된 장면 모델('{saved_model}') 사용 불가 또는 없음. 현재 세션 모델('{self.selected_model}') 유지.")
-                    loaded_scene_settings['selected_model'] = self.selected_model # 로드된 설정에 현재 모델 반영
+                loaded_scene_settings['selected_model'] = model_name_to_use
 
                 self.current_scene_path = scene_path
 
-                # Populate UI (populate_settings_panel 호출 시 내부적으로 모델도 설정함)
                 self.populate_settings_panel(loaded_novel_settings, loaded_chapter_arc_settings, loaded_scene_settings)
                 self.display_output_content(scene_content, loaded_scene_settings.get(constants.TOKEN_INFO_KEY))
+
+                print("CORE DEBUG: 로드 후 수정 플래그 강제 리셋 시도.")
+                self.output_text_modified = False
+                self.novel_settings_modified_flag = False
+                self.arc_settings_modified_flag = False
+                if self.gui_manager:
+                    if self.gui_manager.output_panel: self.gui_manager.output_panel.reset_modified_flag()
+                    if self.gui_manager.settings_panel:
+                        self.gui_manager.settings_panel.reset_novel_modified_flag()
+                        arc_widget = self.gui_manager.settings_panel.widgets.get('chapter_arc_notes_text')
+                        if arc_widget and arc_widget.winfo_exists(): arc_widget.edit_modified(False)
+                        self.gui_manager.settings_panel.reset_chapter_modified_flag()
+
                 self.update_window_title()
 
-                # 재생성 컨텍스트 업데이트
                 print(f"CORE: 재생성 컨텍스트 업데이트용 이전 내용 로드 중 (챕터: '{os.path.basename(chapter_dir)}', 기준: {scene_num}화)")
                 prev_content_for_regen_context = file_handler.load_previous_scenes_in_chapter(chapter_dir, scene_num)
                 self.last_generation_previous_content = prev_content_for_regen_context if prev_content_for_regen_context is not None else ""
-                self.last_generation_settings_snapshot = None # 로드 시에는 초기화
+                self.last_generation_settings_snapshot = None
 
                 ch_str = self._get_chapter_number_str_from_folder(chapter_dir)
                 status_suffix = " (설정 로드됨)"
@@ -902,6 +956,19 @@ class AppCore:
                 self.current_chapter_arc_dir = chapter_dir
 
                 self.populate_settings_panel(loaded_novel_settings, loaded_chapter_arc_settings, None)
+
+                print("CORE DEBUG: 로드 후 수정 플래그 강제 리셋 시도.")
+                self.output_text_modified = False
+                self.novel_settings_modified_flag = False
+                self.arc_settings_modified_flag = False
+                if self.gui_manager:
+                    if self.gui_manager.output_panel: self.gui_manager.output_panel.reset_modified_flag()
+                    if self.gui_manager.settings_panel:
+                        self.gui_manager.settings_panel.reset_novel_modified_flag()
+                        arc_widget = self.gui_manager.settings_panel.widgets.get('chapter_arc_notes_text')
+                        if arc_widget and arc_widget.winfo_exists(): arc_widget.edit_modified(False)
+                        self.gui_manager.settings_panel.reset_chapter_modified_flag()
+
                 self.update_window_title()
 
                 ch_str = self._get_chapter_number_str_from_folder(chapter_dir)
@@ -932,6 +999,19 @@ class AppCore:
                 self.last_generation_settings_snapshot = None
 
                 self.populate_settings_panel(loaded_novel_settings, None, None)
+
+                print("CORE DEBUG: 로드 후 수정 플래그 강제 리셋 시도.")
+                self.output_text_modified = False
+                self.novel_settings_modified_flag = False
+                self.arc_settings_modified_flag = False
+                if self.gui_manager:
+                    if self.gui_manager.output_panel: self.gui_manager.output_panel.reset_modified_flag()
+                    if self.gui_manager.settings_panel:
+                        self.gui_manager.settings_panel.reset_novel_modified_flag()
+                        arc_widget = self.gui_manager.settings_panel.widgets.get('chapter_arc_notes_text')
+                        if arc_widget and arc_widget.winfo_exists(): arc_widget.edit_modified(False)
+                        self.gui_manager.settings_panel.reset_chapter_modified_flag()
+
                 self.update_window_title()
                 self.update_ui_status_and_state(f"✅ 소설 '{novel_name}' 로드됨. '새 챕터 폴더' 또는 트리뷰에서 챕터/장면 선택 가능.",
                                                 generating=False, novel_loaded=True, chapter_loaded=False, scene_loaded=False)
@@ -1012,16 +1092,15 @@ class AppCore:
         if self.current_chapter_arc_dir and os.path.normpath(chapter_path) == os.path.normpath(self.current_chapter_arc_dir):
              was_current_chapter_or_scene = True
              del_msg += "\n\n(현재 로드된 챕터 폴더입니다. 삭제 시 관련 내용이 초기화됩니다.)"
-             # 현재 챕터 관련 미저장 내용 확인
              output_mod = self.output_text_modified and self.current_scene_path and os.path.dirname(self.current_scene_path) == chapter_path
-             arc_mod = self.arc_settings_modified_flag # 아크 노트 플래그
-             scene_snapshot_mod = self.gui_manager.settings_panel.chapter_settings_modified_flag if self.gui_manager.settings_panel else False # 스냅샷 플래그
+             arc_mod = self.arc_settings_modified_flag
+             scene_snapshot_mod = self.gui_manager.settings_panel.chapter_settings_modified_flag if self.gui_manager.settings_panel else False
              if output_mod or arc_mod or scene_snapshot_mod:
                  del_msg += "\n(저장되지 않은 변경사항도 유실됩니다.)"
         elif self.current_scene_path and os.path.dirname(self.current_scene_path) == chapter_path:
              was_current_chapter_or_scene = True
              del_msg += "\n\n(현재 로드된 장면이 이 챕터 폴더 안에 있습니다. 삭제 시 관련 내용이 초기화됩니다.)"
-             if self.output_text_modified: # 내용 변경만 확인
+             if self.output_text_modified:
                   del_msg += "\n(저장되지 않은 내용 변경사항도 유실됩니다.)"
 
         if not self.gui_manager.ask_yes_no("챕터 폴더 삭제 확인", del_msg, icon='warning'):
@@ -1039,7 +1118,7 @@ class AppCore:
                 self.current_scene_path = None
                 self.current_loaded_chapter_arc_settings = {}
                 self.current_loaded_scene_settings = {}
-                novel_name_to_select = self.current_novel_name # 소설은 로드된 상태 유지
+                novel_name_to_select = self.current_novel_name
                 self.update_ui_status_and_state(f"🗑️ [{novel_name_to_select}] '{chapter_folder_name}' 챕터 폴더 삭제됨. (로드 상태 초기화)",
                                                 generating=False, novel_loaded=True, chapter_loaded=False, scene_loaded=False)
                 if novel_name_to_select: self.select_treeview_item(novel_name_to_select)
@@ -1047,7 +1126,6 @@ class AppCore:
                  self.update_status_bar(f"🗑️ [{novel_name_of_deleted}] '{chapter_folder_name}' 챕터 폴더 삭제 완료.")
 
             self.refresh_treeview_data()
-            # 소설 요약 트리거
             if self.current_novel_dir and novel_name_of_deleted != "?" and os.path.normpath(self.current_novel_dir) == os.path.normpath(os.path.join(constants.BASE_SAVE_DIR, novel_name_of_deleted)):
                  self._trigger_summary_generation(self.current_novel_dir)
 
@@ -1077,7 +1155,7 @@ class AppCore:
         if scene_path == self.current_scene_path:
              was_current_scene = True
              del_msg += "\n\n(현재 로드된 장면입니다. 삭제 시 로드 상태가 초기화됩니다.)"
-             if self.output_text_modified: # 내용 변경만 확인
+             if self.output_text_modified:
                   del_msg += "\n(저장되지 않은 내용 변경사항도 유실됩니다.)"
 
         if not self.gui_manager.ask_yes_no("장면 삭제 확인", del_msg, icon='warning'):
@@ -1090,12 +1168,11 @@ class AppCore:
             if was_current_scene:
                 print("CORE: 현재 로드된 장면 삭제됨. UI 초기화 (챕터 폴더 유지).")
                 self.clear_output_panel()
-                # 장면 설정 필드만 초기화
                 if self.gui_manager.settings_panel:
                     self.gui_manager.settings_panel.clear_scene_settings_fields()
                 self.current_scene_path = None
                 self.current_loaded_scene_settings = {}
-                chapter_to_select = self.current_chapter_arc_dir # 챕터는 유지
+                chapter_to_select = self.current_chapter_arc_dir
                 self.update_ui_status_and_state(f"🗑️ '{scene_filename}' 장면 삭제됨. (로드 상태 초기화)",
                                                 generating=False, novel_loaded=True, chapter_loaded=True, scene_loaded=False)
                 if chapter_to_select: self.select_treeview_item(chapter_to_select)
@@ -1103,12 +1180,10 @@ class AppCore:
                  self.update_status_bar(f"🗑️ '{scene_filename}' 장면 삭제 완료.")
 
             self.refresh_treeview_data()
-            # 소설 요약 트리거
             if self.current_novel_dir and os.path.dirname(os.path.dirname(scene_path)) == self.current_novel_dir:
                  self._trigger_summary_generation(self.current_novel_dir)
 
         else:
-            # 오류 메시지는 file_handler에서 표시
             print(f"CORE: 장면 파일 삭제 실패: {scene_filename}")
             self.refresh_treeview_data()
 
@@ -1147,7 +1222,6 @@ class AppCore:
             if was_loaded:
                 print("CORE: 로드된 소설 이름 변경됨. UI 초기화 및 상태 업데이트.")
                 self.clear_all_ui_state()
-                # 변경된 이름으로 소설 다시 로드
                 self.current_novel_name = new_name
                 self.current_novel_dir = new_path
                 self.current_novel_settings = file_handler.load_novel_settings(self.current_novel_dir) or {}
@@ -1159,7 +1233,7 @@ class AppCore:
                  self.update_status_bar(f"✅ {message}")
 
             self.refresh_treeview_data()
-            self.select_treeview_item(new_name) # 변경된 소설 선택
+            self.select_treeview_item(new_name)
 
         else:
             self.gui_manager.show_message("error", "이름 변경 실패", message)
@@ -1178,7 +1252,6 @@ class AppCore:
         del_msg = f"소설 '{novel_name}'을(를) 삭제하시겠습니까?\n\n⚠️ 경고: 소설 폴더 내 모든 챕터 폴더와 파일이 영구 삭제되며 복구할 수 없습니다!"
         if was_loaded:
             del_msg += "\n\n(현재 로드된 소설입니다. 삭제 시 작업 내용이 초기화됩니다.)"
-            # 로드된 소설 삭제 시 모든 미저장 변경사항 확인
             output_mod = self.output_text_modified
             novel_mod = self.novel_settings_modified_flag
             arc_mod = self.arc_settings_modified_flag
@@ -1200,7 +1273,6 @@ class AppCore:
             self.update_status_bar(f"🗑️ {message}")
             self.refresh_treeview_data()
         else:
-            # 오류 메시지는 file_handler에서 표시
             self.refresh_treeview_data()
 
     # --- 수정 감지 및 자동 저장 핸들러 ---
@@ -1211,7 +1283,7 @@ class AppCore:
 
         print("CORE DEBUG: 소설 설정 변경 감지됨. 저장 예약.")
         self.novel_settings_modified_flag = True
-        self.update_ui_state() # 저장 버튼 상태 업데이트
+        self.update_ui_state()
 
         if self._novel_settings_after_id and self.gui_manager and self.gui_manager.root:
             try: self.gui_manager.root.after_cancel(self._novel_settings_after_id)
@@ -1223,7 +1295,6 @@ class AppCore:
             self._novel_settings_after_id = self.gui_manager.root.after(save_delay_ms, self._save_current_novel_settings)
             print(f"CORE DEBUG: {save_delay_ms}ms 후 소설 설정 저장 예약됨.")
 
-    # *** 수정된 핸들러: 이제 SettingsPanel에서 직접 호출됨 ***
     def handle_arc_settings_modified(self):
         """챕터 아크 노트 텍스트 위젯 수정 감지 시 호출됨 (자동 저장 스케줄)"""
         if self.check_busy_and_warn(): return
@@ -1231,8 +1302,7 @@ class AppCore:
 
         print("CORE DEBUG: 챕터 아크 노트 변경 감지됨. 저장 예약.")
         self.arc_settings_modified_flag = True
-        # *** 제거된 라인: _trigger_chapter_settings_modified_in_gui() 호출 ***
-        self.update_ui_state() # 저장 버튼 상태 업데이트
+        self.update_ui_state()
 
         if self._arc_settings_after_id and self.gui_manager and self.gui_manager.root:
             try: self.gui_manager.root.after_cancel(self._arc_settings_after_id)
@@ -1247,16 +1317,16 @@ class AppCore:
 
     def handle_output_modified(self):
         """출력 텍스트 위젯 수정 감지 시 호출됨"""
-        if self._check_if_busy_status(): return # 타이핑 중에는 경고 없이 상태만 확인
+        if self._check_if_busy_status(): return
         if self.current_scene_path:
              output_widget = self.gui_manager.output_panel.widgets.get('output_text') if self.gui_manager and self.gui_manager.output_panel else None
              if output_widget and output_widget.edit_modified():
                  self.output_text_modified = True
-                 self.update_ui_state() # 저장 버튼 상태 업데이트
+                 self.update_ui_state()
                  if self.gui_manager and self.gui_manager.output_panel:
                      content = self.gui_manager.output_panel.get_content()
                      self.gui_manager.output_panel.update_char_count_display(content)
-                 output_widget.edit_modified(False) # Tk 플래그 리셋
+                 output_widget.edit_modified(False)
 
     # --- 설정 메뉴 핸들러들 ---
     def handle_api_key_dialog(self):
@@ -1288,10 +1358,10 @@ class AppCore:
                     print("CORE: API 키 .env 파일 저장 성공.")
                     print("CORE: API 설정 및 모델 목록 새로고침 시도...")
                     try:
-                        api_handler.configure_apis() # API 재설정
-                        self.available_models_by_type = api_handler.get_available_models() # 모델 목록 새로고침
+                        api_handler.configure_apis()
+                        self.available_models_by_type = api_handler.get_available_models()
                         api_reconfigured = True
-                        self._validate_and_update_models_after_reconfig() # 모델 유효성 재검사
+                        self._validate_and_update_models_after_reconfig()
                         self.gui_manager.show_message("info", "저장 완료", "API 키가 저장되었습니다.\n모델 목록이 업데이트되었을 수 있습니다.")
                     except Exception as e:
                          print(f"CORE ERROR: 키 저장 후 API 재설정/모델 로드 실패: {e}")
@@ -1382,7 +1452,7 @@ class AppCore:
             if new_model != current_summary_model_for_api:
                 print(f"CORE: 요약 모델 변경 ({current_api.capitalize()}): {current_summary_model_for_api} -> {new_model}")
                 self.summary_models[current_api] = new_model
-                self.summary_model = new_model # 활성 모델 업데이트
+                self.summary_model = new_model
 
                 config_key = f"{constants.SUMMARY_MODEL_KEY_PREFIX}{current_api}"
                 self.config[config_key] = new_model
@@ -1395,6 +1465,39 @@ class AppCore:
         elif new_model is not None:
              print(f"CORE ERROR: Dialog에서 잘못된 요약 모델 반환: {new_model}")
 
+    # --- 추가: 렌더링 폰트 설정 핸들러 ---
+    def handle_render_font_dialog(self):
+        """이미지 캡처 폰트 설정 대화상자 표시 및 결과 처리"""
+        if self.check_busy_and_warn(): return
+        if not self.gui_manager: return
+
+        new_path = gui_dialogs.show_font_config_dialog(self.gui_manager.root, self.render_font_path)
+
+        if new_path is not None:
+            if new_path != self.render_font_path:
+                if new_path and not os.path.isfile(new_path):
+                    self.gui_manager.show_message("warning", "경로 오류", f"선택한 폰트 파일을 찾을 수 없습니다:\n{new_path}\n\n설정이 저장되지 않았습니다.")
+                    return
+
+                print(f"CORE: 이미지 캡처 폰트 경로 변경됨: '{self.render_font_path}' -> '{new_path}'")
+                self.render_font_path = new_path
+                self.config[constants.CONFIG_RENDER_FONT_PATH] = new_path
+                if file_handler.save_config(self.config):
+                    self.gui_manager.show_message("info", "저장 완료", f"이미지 캡처 폰트 설정이 저장되었습니다.\n{'기본 폰트 사용' if not new_path else '지정된 폰트 사용'}.")
+                    # Check if image_utils has a cache clear function
+                    if hasattr(image_utils, '_font_cache') and callable(getattr(image_utils, '_font_cache', {}).clear):
+                        try:
+                             image_utils._font_cache.clear()
+                             print("CORE: 폰트 캐시 초기화됨.")
+                        except Exception as e:
+                             print(f"CORE WARN: 폰트 캐시 초기화 중 오류: {e}")
+                else:
+                    self.gui_manager.show_message("error", "저장 실패", "폰트 설정을 config.json에 저장 실패.")
+            else:
+                print("CORE: 이미지 캡처 폰트 설정 변경 없음.")
+        else:
+            print("CORE: 이미지 캡처 폰트 설정 취소됨.")
+    # --- ---
 
     def handle_open_save_directory(self):
         if self.check_busy_and_warn(): return
@@ -1416,27 +1519,34 @@ class AppCore:
     # --- 내부 헬퍼 및 스레드 관련 ---
 
     def _check_if_busy_status(self):
-        """내부 상태 확인: 현재 생성 또는 요약 작업 중인지 순수하게 확인"""
+        """내부 상태 확인: 생성, 요약, 또는 캡처 작업 중인지 확인"""
         generating = getattr(self, 'is_generating', False)
         summarizing = getattr(self, 'is_summarizing', False)
-        return generating or summarizing
+        capturing = getattr(self, 'is_capturing', False)
+        return generating or summarizing or capturing
 
     def is_busy(self):
-        """Public method to check if the core is busy generating or summarizing."""
+        """Public method to check if the core is busy."""
         return self._check_if_busy_status()
 
     def check_busy_and_warn(self):
-        """상태 확인 및 사용자 알림: 현재 작업 중인지 확인하고, 그렇다면 경고 메시지 표시"""
+        """상태 확인 및 사용자 알림: 작업 중이면 경고 표시"""
         busy = self._check_if_busy_status()
         if busy and self.gui_manager:
+            busy_tasks = []
+            if getattr(self, 'is_generating', False): busy_tasks.append("AI 생성")
+            if getattr(self, 'is_summarizing', False): busy_tasks.append("줄거리 요약")
+            if getattr(self, 'is_capturing', False): busy_tasks.append("이미지 캡처")
+            task_str = ", ".join(busy_tasks) if busy_tasks else "다른 작업"
+
             try:
                 caller_frame = traceback.extract_stack()[-2]
                 caller_name = caller_frame.name
                 caller_lineno = caller_frame.lineno
-                print(f"DEBUG: check_busy_and_warn() called by {caller_name} (line {caller_lineno}), showing Busy message (generating={getattr(self, 'is_generating', False)}, summarizing={getattr(self, 'is_summarizing', False)})")
+                print(f"DEBUG: check_busy_and_warn() called by {caller_name} (line {caller_lineno}), showing Busy message (Tasks: {task_str})")
             except Exception:
-                 print(f"DEBUG: check_busy_and_warn() called, showing Busy message (generating={getattr(self, 'is_generating', False)}, summarizing={getattr(self, 'is_summarizing', False)})")
-            self.gui_manager.show_message("info", "작업 중", "현재 다른 AI 작업이 진행 중입니다.\n완료 후 다시 시도해주세요.")
+                 print(f"DEBUG: check_busy_and_warn() called, showing Busy message (Tasks: {task_str})")
+            self.gui_manager.show_message("info", "작업 중", f"현재 {task_str} 작업이 진행 중입니다.\n완료 후 다시 시도해주세요.")
         return busy
 
     def clear_all_ui_state(self):
@@ -1458,14 +1568,12 @@ class AppCore:
         self.last_generation_previous_content = None
         self.last_generation_settings_snapshot = None
 
-        # 모든 수정 플래그 리셋
         self.output_text_modified = False
         self.novel_settings_modified_flag = False
         self.arc_settings_modified_flag = False
         if self.gui_manager and self.gui_manager.settings_panel:
-             self.gui_manager.settings_panel.reset_chapter_modified_flag() # 스냅샷 플래그 리셋
+             self.gui_manager.settings_panel.reset_chapter_modified_flag()
 
-        # 자동 저장 타이머 취소
         if self._novel_settings_after_id and self.gui_manager and self.gui_manager.root:
             try: self.gui_manager.root.after_cancel(self._novel_settings_after_id)
             except Exception: pass
@@ -1499,7 +1607,6 @@ class AppCore:
         if unsaved_novel and self.current_novel_dir: prompt_lines.append(f"  - 소설 전체 설정 ({self.current_novel_name})")
         if unsaved_arc and self.current_chapter_arc_dir: prompt_lines.append(f"  - 챕터 아크 노트 ({os.path.basename(self.current_chapter_arc_dir)})")
         if unsaved_scene_snapshot and self.current_scene_path: prompt_lines.append(f"  - 장면 설정/옵션 ({os.path.basename(self.current_scene_path)})")
-
         if unsaved_output and not self.current_scene_path: prompt_lines.append("  - 장면 내용 (로드되지 않음)")
         if unsaved_novel and not self.current_novel_dir: prompt_lines.append("  - 소설 전체 설정 (로드되지 않음)")
         if unsaved_arc and not self.current_chapter_arc_dir: prompt_lines.append("  - 챕터 아크 노트 (로드되지 않음)")
@@ -1514,7 +1621,6 @@ class AppCore:
         if resp is True: # 저장 (Yes)
             print(f"CORE: '{action_description}' 전 저장 선택됨.")
             self.handle_save_changes_request()
-            # 저장 시도 후 플래그 재확인
             snapshot_mod_after_save = self.gui_manager.settings_panel.chapter_settings_modified_flag if self.gui_manager.settings_panel else False
             if self.output_text_modified or self.novel_settings_modified_flag or self.arc_settings_modified_flag or snapshot_mod_after_save:
                  print("CORE WARN: 저장 시도 후에도 변경사항 플래그가 남아있음 (저장 실패?). 작업 취소.")
@@ -1528,7 +1634,6 @@ class AppCore:
             return False
         else: # 저장 안 함 (No)
             print(f"CORE: 변경사항 저장 안 함 선택됨 ({action_description} 진행).")
-            # 모든 플래그 리셋
             self.output_text_modified = False
             self.novel_settings_modified_flag = False
             self.arc_settings_modified_flag = False
@@ -1536,10 +1641,9 @@ class AppCore:
             if self.gui_manager.settings_panel:
                  self.gui_manager.settings_panel.reset_novel_modified_flag()
                  arc_widget = self.gui_manager.settings_panel.widgets.get('chapter_arc_notes_text')
-                 if arc_widget: arc_widget.edit_modified(False) # Arc notes Tk flag reset
-                 self.gui_manager.settings_panel.reset_chapter_modified_flag() # Snapshot flag reset
+                 if arc_widget and arc_widget.winfo_exists(): arc_widget.edit_modified(False)
+                 self.gui_manager.settings_panel.reset_chapter_modified_flag()
 
-            # 자동 저장 타이머 취소
             if self._novel_settings_after_id and self.gui_manager and self.gui_manager.root:
                 try: self.gui_manager.root.after_cancel(self._novel_settings_after_id)
                 except Exception: pass; self._novel_settings_after_id = None
@@ -1564,21 +1668,19 @@ class AppCore:
         if read_chapter_arc_settings:
              settings[constants.CHAPTER_ARC_NOTES_KEY] = panel_settings.get(constants.CHAPTER_ARC_NOTES_KEY, "")
         if read_scene_settings:
-             # 장면 스냅샷에 저장할 키들 (플롯, 온도, 길이, 모델)
              settings[constants.SCENE_PLOT_KEY] = panel_settings.get(constants.SCENE_PLOT_KEY, "")
              settings['temperature'] = panel_settings.get('temperature', constants.DEFAULT_TEMPERATURE)
              settings['length'] = panel_settings.get('length', constants.LENGTH_OPTIONS[0])
              settings['selected_model'] = panel_settings.get('selected_model', self.selected_model)
-             # selected_api_type은 스냅샷에 저장하지 않음
 
         return settings
 
     def _save_current_novel_settings(self):
         """현재 GUI의 소설 설정 내용을 파일에 저장 (자동 저장용)"""
         if not self.gui_manager or not self.gui_manager.settings_panel: return False
-        self._novel_settings_after_id = None # 타이머 리셋
+        self._novel_settings_after_id = None
         if not self.current_novel_dir: return True
-        if not self.novel_settings_modified_flag: return True # 변경 없으면 저장 안 함
+        if not self.novel_settings_modified_flag: return True
 
         print(f"CORE: 소설 설정 자동 저장 시도: {self.current_novel_name}")
         try:
@@ -1594,9 +1696,9 @@ class AppCore:
                 status_msg = f"✅ [{self.current_novel_name}] 소설 설정 자동 저장됨."
                 self.gui_manager.update_status_bar_conditional(status_msg)
                 self.gui_manager.schedule_status_clear(status_msg, 3000)
-                self.novel_settings_modified_flag = False # 플래그 리셋
-                if self.gui_manager.settings_panel: self.gui_manager.settings_panel.reset_novel_modified_flag() # Tk 플래그 리셋
-                self.update_ui_state() # UI 업데이트
+                self.novel_settings_modified_flag = False
+                if self.gui_manager.settings_panel: self.gui_manager.settings_panel.reset_novel_modified_flag()
+                self.update_ui_state()
                 return True
             else:
                 status_msg = f"❌ [{self.current_novel_name}] 소설 설정 자동 저장 실패."
@@ -1611,9 +1713,9 @@ class AppCore:
     def _save_current_chapter_arc_settings(self):
         """현재 GUI의 챕터 아크 노트 내용을 파일에 저장 (자동 저장용)"""
         if not self.gui_manager or not self.gui_manager.settings_panel: return False
-        self._arc_settings_after_id = None # 타이머 리셋
+        self._arc_settings_after_id = None
         if not self.current_chapter_arc_dir: return True
-        if not self.arc_settings_modified_flag: return True # 아크 노트 변경 플래그 확인
+        if not self.arc_settings_modified_flag: return True
 
         print(f"CORE: 챕터 아크 노트 자동 저장 시도: {os.path.basename(self.current_chapter_arc_dir)}")
         try:
@@ -1631,9 +1733,9 @@ class AppCore:
                 status_msg = f"✅ [{self.current_novel_name}] {ch_str} 아크 노트 자동 저장됨."
                 self.gui_manager.update_status_bar_conditional(status_msg)
                 self.gui_manager.schedule_status_clear(status_msg, 3000)
-                self.arc_settings_modified_flag = False # 아크 노트 플래그 리셋
-                if arc_widget: arc_widget.edit_modified(False) # Tk 플래그 리셋
-                self.update_ui_state() # UI 업데이트
+                self.arc_settings_modified_flag = False
+                if arc_widget: arc_widget.edit_modified(False)
+                self.update_ui_state()
                 return True
             else:
                 ch_str = self._get_chapter_number_str_from_folder(self.current_chapter_arc_dir)
@@ -1649,7 +1751,7 @@ class AppCore:
     def _start_generation_thread_internal(self, api_type, novel_settings, chapter_arc_notes, scene_specific_settings, previous_scene_content, target_chapter_arc_dir, target_scene_number, is_new_scene):
         """장면 생성 스레드 시작 및 UI 상태 관리 (API 타입 인자 추가)"""
         if self._check_if_busy_status():
-             print("CORE WARN: 생성 요청 무시됨 (이미 작업 진행 중 - 내부 확인).")
+             print("CORE WARN: 생성 요청 무시됨 (다른 작업 진행 중).")
              return
         if not novel_settings or not chapter_arc_notes or not scene_specific_settings or not target_chapter_arc_dir or target_scene_number < 1:
              msg = "생성 시작 실패: 필수 설정 정보 누락 (소설/챕터/장면 플롯/타겟)."
@@ -1685,7 +1787,7 @@ class AppCore:
                 else:
                     raise ValueError(f"No valid models available for API type '{current_api_type}'")
 
-            scene_specific_settings['selected_model'] = model_name_to_use # 스냅샷에 사용할 최종 모델명 반영
+            scene_specific_settings['selected_model'] = model_name_to_use
 
             system_prompt_val = self.system_prompt
             print("CORE DEBUG: Generating prompt with:")
@@ -1700,7 +1802,6 @@ class AppCore:
             )
             if not prompt_text: raise ValueError("프롬프트 생성 실패.")
 
-            # 스냅샷 생성 (장면 관련 설정: 플롯, 온도, 길이, 모델)
             scene_settings_snapshot = {}
             keys_for_snapshot = [constants.SCENE_PLOT_KEY, 'temperature', 'length', 'selected_model']
             for key in keys_for_snapshot:
@@ -1725,15 +1826,14 @@ class AppCore:
              return
 
         self.is_generating = True
-        # 생성 시작 전 모든 관련 수정 플래그 리셋
         self.output_text_modified = False
-        self.arc_settings_modified_flag = False # 아크 노트 플래그
+        self.arc_settings_modified_flag = False
         if self.gui_manager and self.gui_manager.settings_panel:
-             self.gui_manager.settings_panel.reset_chapter_modified_flag() # 스냅샷 플래그
+             self.gui_manager.settings_panel.reset_chapter_modified_flag()
         if self.gui_manager and self.gui_manager.output_panel:
              self.gui_manager.output_panel.reset_modified_flag()
 
-        self.update_ui_state(generating=True, scene_loaded=(not is_new_scene))
+        self.update_ui_state()
         self.start_timer("⏳ AI 생성 준비 중...")
 
         thread = threading.Thread(target=self._run_generation_in_thread, args=thread_args, daemon=True)
@@ -1780,6 +1880,7 @@ class AppCore:
 
         if not self.gui_manager or not self.gui_manager.root or not self.gui_manager.root.winfo_exists():
              print("CORE WARN: 결과 처리 중단 - GUI 없음.")
+             self.update_ui_state()
              return
 
         generated_content = result_data if isinstance(result_data, str) else "오류: 잘못된 데이터 타입 수신"
@@ -1827,8 +1928,10 @@ class AppCore:
                          self.last_generation_settings_snapshot = settings_snapshot.copy()
                          self.last_generation_previous_content = previous_content
 
-                         # 성공 후 populate을 다시 호출하여 모든 필드와 플래그를 최신 상태로 만듦
                          self.populate_settings_panel(self.current_novel_settings, self.current_loaded_chapter_arc_settings, self.current_loaded_scene_settings)
+                         self.output_text_modified = False
+                         if self.gui_manager and self.gui_manager.output_panel: self.gui_manager.output_panel.reset_modified_flag()
+                         if self.gui_manager and self.gui_manager.settings_panel: self.gui_manager.settings_panel.reset_chapter_modified_flag()
 
                          self.refresh_treeview_data()
                          self.select_treeview_item(saved_scene_path)
@@ -1855,7 +1958,7 @@ class AppCore:
                   status_message = "⚠️ AI가 빈 내용을 생성했습니다. 플롯이나 설정을 확인하세요."
                   print(f"CORE WARN: 빈 내용 생성됨 (Target: {target_file_str})")
              else:
-                  status_message = generated_content # 오류 메시지 포함
+                  status_message = generated_content
                   print(f"CORE ERROR: 장면 {action_desc} 실패 - {status_message}")
 
              self.last_generation_settings_snapshot = None
@@ -1868,7 +1971,6 @@ class AppCore:
 
              novel_dir_for_summary = None
 
-        # 최종 UI 상태 업데이트
         final_scene_loaded = bool(saved_scene_path or (not is_new_scene and self.current_scene_path))
         final_novel_loaded = bool(self.current_novel_dir)
         self.update_ui_status_and_state(status_message, generating=False, novel_loaded=final_novel_loaded, chapter_loaded=bool(self.current_chapter_arc_dir), scene_loaded=final_scene_loaded)
@@ -1902,11 +2004,16 @@ class AppCore:
     def _update_timer_display(self):
         """타이머 상태 표시줄 업데이트 (주기적 호출)"""
         if not self.gui_manager or not self.gui_manager.root: return
-        if self.is_generating or self.is_summarizing:
+        if self.is_generating or self.is_summarizing or self.is_capturing:
             elapsed_time = time.time() - self.start_time if self.start_time > 0 else 0
             spinner_icons = ["◐", "◓", "◑", "◒"]
             icon = spinner_icons[int(elapsed_time * 2.5) % len(spinner_icons)]
-            status_prefix = "⏳ AI 생성 중..." if self.is_generating else "⏳ 이전 줄거리 요약 중..."
+
+            status_prefix = "⏳ 작업 중..."
+            if self.is_generating: status_prefix = "⏳ AI 생성 중..."
+            elif self.is_summarizing: status_prefix = "⏳ 이전 줄거리 요약 중..."
+            elif self.is_capturing: status_prefix = "🖼️ 내용 이미지 캡처 중..."
+
             self.update_status_bar(f"{icon} {status_prefix} ({elapsed_time:.1f}초)")
             if self.gui_manager.root.winfo_exists():
                  self.timer_after_id = self.gui_manager.root.after(150, self._update_timer_display)
@@ -1925,13 +2032,17 @@ class AppCore:
             if self.gui_manager: self.gui_manager.schedule_status_clear(f"⚠️ {current_api.capitalize()} 요약 모델 미설정", 3000)
             return
         if not novel_dir or not os.path.isdir(novel_dir): return
-        if self.is_summarizing: print("CORE INFO: 이미 요약 작업 진행 중."); return
-        if self.is_generating: print("CORE INFO: 생성 작업 중. 요약 건너뜀."); return
+        if self._check_if_busy_status():
+             if self.is_summarizing: print("CORE INFO: 이미 요약 작업 진행 중.")
+             elif self.is_generating: print("CORE INFO: 생성 작업 중. 요약 건너뜀.")
+             elif self.is_capturing: print("CORE INFO: 이미지 캡처 중. 요약 건너뜀.")
+             else: print("CORE INFO: 다른 작업 진행 중. 요약 건너뜀.")
+             return
 
         print(f"CORE: 소설 '{os.path.basename(novel_dir)}' 줄거리 요약 생성 시작 (API: {current_api}, Model: {summary_model_for_current_api})...")
         self.is_summarizing = True
-        self.start_timer("⏳ 이전 줄거리 요약 중...")
         self.update_ui_state()
+        self.start_timer("⏳ 이전 줄거리 요약 중...")
 
         thread_args = (current_api, summary_model_for_current_api, novel_dir)
         summary_thread = threading.Thread(
@@ -1975,7 +2086,9 @@ class AppCore:
         self.stop_timer()
 
         if not self.gui_manager or not self.gui_manager.settings_panel:
-             print("CORE WARN: 요약 결과 처리 실패 - GUI 없음"); self.update_ui_state(); return
+             print("CORE WARN: 요약 결과 처리 실패 - GUI 없음")
+             self.update_ui_state()
+             return
 
         if error_detail:
             print(f"CORE ERROR: 요약 생성 실패: {error_detail}")
@@ -1987,7 +2100,6 @@ class AppCore:
             else:
                 try:
                     novel_key = constants.NOVEL_MAIN_SETTINGS_KEY
-                    # 현재 소설 설정 텍스트를 GUI에서 가져옴 (요약 외 부분 보존)
                     current_novel_setting_text = self.gui_manager.settings_panel.get_novel_settings() or ""
                     summary_header = constants.SUMMARY_HEADER
                     text_before_summary = current_novel_setting_text
@@ -2007,8 +2119,9 @@ class AppCore:
                         print("CORE: 요약 포함된 소설 설정 저장 완료.")
                         self.current_novel_settings[novel_key] = final_novel_setting
                         if self.gui_manager.settings_panel:
-                            # 위젯 업데이트 및 플래그 리셋
                             self.gui_manager.settings_panel.set_novel_settings(final_novel_setting)
+                            self.novel_settings_modified_flag = False
+                            self.gui_manager.settings_panel.reset_novel_modified_flag()
 
                         status_msg = "✅ 이전 줄거리 요약 업데이트 완료."
                         self.update_status_bar_conditional(status_msg)
@@ -2026,6 +2139,55 @@ class AppCore:
              self.update_status_bar_conditional("⚠️ 이전 줄거리 요약 실패 (결과 없음).")
 
         self.update_ui_state()
+
+    def _run_capture_in_thread(self, capture_function, capture_args):
+        """백그라운드 스레드: 이미지 캡처 실행 (함수와 인자를 받음)"""
+        success = False
+        error_msg = None
+        thread_id = threading.get_ident()
+        func_name = getattr(capture_function, '__name__', 'unknown_capture_function')
+        print(f"CORE THREAD {thread_id}: 이미지 캡처 작업 시작 (Method: {func_name})...")
+        try:
+            # Pass arguments using *args expansion
+            success, error_msg = capture_function(*capture_args)
+            if not success:
+                print(f"CORE THREAD {thread_id}: ❌ {func_name} 실행 실패: {error_msg}")
+        except Exception as e:
+            print(f"CORE THREAD {thread_id}: ❌ {func_name} 스레드 오류: {e}")
+            traceback.print_exc()
+            success = False
+            if error_msg is None: error_msg = f"캡처 스레드 내부 오류 발생: {e}"
+        finally:
+            if self.gui_manager and self.gui_manager.root and self.gui_manager.root.winfo_exists():
+                self.gui_manager.root.after(0, self._process_capture_result, success, error_msg)
+            else:
+                print(f"CORE THREAD {thread_id}: GUI 루트 없음. 캡처 결과 처리 불가.")
+
+    def _process_capture_result(self, success: bool, error_message: str = None):
+        """이미지 캡처 결과 처리 (메인 스레드에서 실행)"""
+        print(f"CORE: 이미지 캡처 결과 처리 시작 (Success: {success})...")
+
+        self.is_capturing = False
+        self.stop_timer()
+
+        if self.gui_manager:
+            if success:
+                status_msg = "✅ 내용 이미지 저장 완료."
+                self.update_status_bar(status_msg)
+                self.gui_manager.schedule_status_clear(status_msg, 3000)
+            else:
+                status_msg = "⚠️ 내용 이미지 저장 실패 또는 취소됨."
+                detailed_msg = f"내용을 이미지 파일로 저장하는 데 실패했습니다.\n({error_message or '알 수 없는 오류'})"
+                print(f"CORE ERROR: {detailed_msg}")
+                self.update_status_bar(status_msg)
+                self.gui_manager.show_message("error", "저장 실패", detailed_msg)
+                self.gui_manager.schedule_status_clear(status_msg, 5000)
+
+            self.update_ui_state()
+        else:
+            print("CORE WARN: 이미지 캡처 결과 처리 실패 - GUI Manager 없음.")
+
+        print("CORE: 이미지 캡처 결과 처리 완료.")
 
     # --- 내부 유틸리티 함수 ---
     def _get_chapter_number_from_folder(self, folder_path_or_name):
@@ -2084,7 +2246,6 @@ class AppCore:
     def _trigger_chapter_settings_modified_in_gui(self):
         """GUI SettingsPanel의 장면 스냅샷 수정 플래그 설정 요청"""
         if self.gui_manager and self.gui_manager.settings_panel:
-             # SettingsPanel의 내부 함수 호출 (플롯/옵션/모델 변경 시)
              self.gui_manager.settings_panel._trigger_chapter_settings_modified()
         else:
              print("CORE WARN: GUI SettingsPanel 없음. 수정 플래그 설정 불가.")
@@ -2094,14 +2255,13 @@ class AppCore:
         if self.gui_manager and self.gui_manager.status_label_widget and self.gui_manager.status_label_widget.winfo_exists():
             try:
                 current_text = self.gui_manager.get_status_bar_text()
-                if not any(prefix in current_text for prefix in ["✅", "❌", "⚠️", "⏳", "🔄", "✨", "📄", "🗑️"]):
+                if not any(prefix in current_text for prefix in ["✅", "❌", "⚠️", "⏳", "🔄", "✨", "📄", "🗑️", "🖼️"]):
                     self.gui_manager.update_status_bar(message)
-            except tk.TclError: pass # 위젯 파괴 시 무시
+            except tk.TclError: pass
 
     def _validate_and_update_models_after_reconfig(self):
         """Helper to re-validate selected/summary models after API keys/config change."""
         print("CORE DEBUG: Validating models after API reconfiguration...")
-        # 1. 현재 API 타입 및 선택된 창작 모델 재검증
         current_api_valid = self.current_api_type in self.available_models_by_type and self.available_models_by_type[self.current_api_type]
         if not current_api_valid:
              print(f"CORE WARN: 현재 API 타입 '{self.current_api_type}'이(가) 재설정 후 유효하지 않게 됨. 다른 API로 전환 시도.")
@@ -2118,7 +2278,7 @@ class AppCore:
                   self.available_models = []
              else:
                   print(f"CORE INFO: 새 활성 API 타입으로 전환됨: {self.current_api_type}")
-             self.selected_model = None # 새 API 타입에 대해 모델 강제 재선택
+             self.selected_model = None
 
         current_models = self.available_models_by_type.get(self.current_api_type, [])
         if not self.selected_model or self.selected_model not in current_models:
@@ -2138,7 +2298,6 @@ class AppCore:
                   self.selected_model = None
                   print(f"CORE WARN: API 재설정 후 현재 API 타입 '{self.current_api_type}'에 모델 없음.")
 
-        # 2. 모든 API 타입의 요약 모델 재검증
         print("CORE DEBUG: Re-validating summary models...")
         for api_type in constants.SUPPORTED_API_TYPES:
              api_models = self.available_models_by_type.get(api_type, [])
@@ -2160,6 +2319,7 @@ class AppCore:
                        self.summary_models[api_type] = api_models[0]
                   print(f"CORE INFO: ({api_type.capitalize()}) 요약 모델 변경됨: {old_summary} -> {self.summary_models[api_type]}")
 
-        # 활성 요약 모델 업데이트
         self.summary_model = self.summary_models.get(self.current_api_type)
         print(f"CORE INFO: 활성 요약 모델 업데이트됨 -> {self.summary_model}")
+
+# --- END OF FILE app_core.py ---
